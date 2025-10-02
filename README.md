@@ -8,7 +8,10 @@ Want to help 3Speak with video encoding? **Get running in 2 minutes!**
 
 **Linux/Mac:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/menobass/3speakencoder/main/install.sh | bash
+# Download and run interactively to allow configuration choices
+wget https://raw.githubusercontent.com/menobass/3speakencoder/main/install.sh
+chmod +x install.sh
+./install.sh
 ```
 
 **Windows:**
@@ -336,8 +339,8 @@ choco install ipfs
 
 **Install IPFS manually (if needed):**
 ```bash
-# Linux/Mac with install script (recommended)
-curl -sSL https://raw.githubusercontent.com/menobass/3speakencoder/main/install.sh | bash
+# Linux/Mac with install script (recommended - allows interactive setup)
+wget https://raw.githubusercontent.com/menobass/3speakencoder/main/install.sh && chmod +x install.sh && ./install.sh
 
 # Or install manually:
 # Linux: Download from https://dist.ipfs.tech/kubo/

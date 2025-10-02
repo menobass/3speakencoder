@@ -94,9 +94,12 @@ iwr -useb https://raw.githubusercontent.com/menobass/3speakencoder/main/install.
    ```
 
 ### 🐧 For Linux/Mac Users:
-**🎯 One-Command Installation:**
+**🎯 Interactive Installation (Recommended):**
 ```bash
-curl -sSL https://raw.githubusercontent.com/menobass/3speakencoder/main/install.sh | bash
+# Download and run interactively for full configuration options
+wget https://raw.githubusercontent.com/menobass/3speakencoder/main/install.sh
+chmod +x install.sh
+./install.sh
 ```
 
 **✨ What this does automatically:**
