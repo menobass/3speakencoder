@@ -12,8 +12,9 @@ curl -sSL https://raw.githubusercontent.com/menobass/3speakencoder/main/install.
 ```
 
 **Windows:**
-- Download and run `install.bat` from releases
-- Or use PowerShell: `iwr -useb https://raw.githubusercontent.com/menobass/3speakencoder/main/install.bat | iex`
+- **PowerShell (Recommended):** `iwr -useb https://raw.githubusercontent.com/menobass/3speakencoder/main/install.ps1 | iex`
+- **Batch file:** Download and run `install.bat` from releases
+- **Manual:** Follow the manual installation guide below
 
 **Docker (All Platforms):**
 ```bash

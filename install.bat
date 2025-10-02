@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 echo 3Speak Video Encoder - Windows Installer
 echo =========================================
 echo.
@@ -46,6 +47,31 @@ if errorlevel 1 (
 
 echo ✅ FFmpeg found
 
+REM Check if IPFS is installed
+ipfs version >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo ❌ IPFS is not installed!
+    echo.
+    echo 📥 Installing IPFS with Chocolatey...
+    echo    If this fails, install manually from https://dist.ipfs.tech/kubo/
+    echo.
+    
+    REM Install IPFS
+    choco install ipfs -y
+    
+    REM Refresh environment
+    refreshenv
+    
+    REM Initialize IPFS if not done
+    if not exist "%USERPROFILE%\.ipfs" (
+        echo 🔧 Initializing IPFS...
+        ipfs init
+    )
+) else (
+    echo ✅ IPFS found
+)
+
 REM Choose encoder mode
 echo.
 echo 🎯 Choose your encoder mode:
@@ -76,7 +102,7 @@ if "%ENCODER_MODE%"=="direct" (
     set /p HIVE_USERNAME="Hive username (or press Enter to skip): "
     if "!HIVE_USERNAME!"=="" (
         set "HIVE_USERNAME=direct-api-encoder"
-        echo ℹ️ Using default username: !HIVE_USERNAME!
+        echo ℹ️ Using default username: direct-api-encoder
     )
 ) else (
     echo 👤 What's your Hive username? ^(required for gateway mode^)
@@ -211,6 +237,20 @@ echo    ✅ Submit results back to 3Speak
 echo.
 echo ❓ Need help? Check the README.md or join our Discord!
 echo.
+
+REM Check if IPFS daemon is running and start if needed
+echo 📦 Checking IPFS daemon...
+curl -s --connect-timeout 3 http://127.0.0.1:5001/api/v0/id >nul 2>&1
+if errorlevel 1 (
+    echo ⚠️ IPFS daemon is not running. Starting IPFS daemon...
+    echo 💡 Starting IPFS daemon in background...
+    start /b ipfs daemon
+    echo ⏳ Waiting for IPFS daemon to start...
+    timeout /t 3 /nobreak >nul
+    echo ✅ IPFS daemon started
+) else (
+    echo ✅ IPFS daemon is running
+)
 
 REM Offer to start immediately
 set /p START_NOW="🚀 Start the encoder now? (y/n): "
