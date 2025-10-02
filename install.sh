@@ -77,6 +77,82 @@ install_deps() {
     fi
 }
 
+# Install IPFS
+install_ipfs() {
+    if [[ "$OS" == "linux" ]]; then
+        echo "📦 Installing IPFS for Linux..."
+        
+        # Download and install IPFS
+        IPFS_VERSION="0.23.0"
+        ARCH=$(uname -m)
+        
+        if [[ "$ARCH" == "x86_64" ]]; then
+            IPFS_ARCH="amd64"
+        elif [[ "$ARCH" == "aarch64" ]] || [[ "$ARCH" == "arm64" ]]; then
+            IPFS_ARCH="arm64"
+        else
+            echo "❌ Unsupported architecture: $ARCH"
+            exit 1
+        fi
+        
+        cd /tmp
+        wget -O kubo.tar.gz "https://dist.ipfs.tech/kubo/v${IPFS_VERSION}/kubo_v${IPFS_VERSION}_linux-${IPFS_ARCH}.tar.gz"
+        tar -xzf kubo.tar.gz
+        cd kubo
+        sudo bash install.sh
+        cd ..
+        rm -rf kubo kubo.tar.gz
+        
+        # Initialize IPFS
+        if [ ! -d ~/.ipfs ]; then
+            echo "🔧 Initializing IPFS..."
+            ipfs init
+        fi
+        
+    elif [[ "$OS" == "mac" ]]; then
+        echo "📦 Installing IPFS with brew..."
+        brew install ipfs
+        
+        # Initialize IPFS  
+        if [ ! -d ~/.ipfs ]; then
+            echo "🔧 Initializing IPFS..."
+            ipfs init
+        fi
+    fi
+}
+
+# Start IPFS daemon
+start_ipfs_daemon() {
+    echo "🚀 Starting IPFS daemon in background..."
+    
+    # Start IPFS daemon in screen session so it persists
+    if command -v screen &> /dev/null; then
+        screen -dmS ipfs-daemon ipfs daemon
+        echo "💡 IPFS daemon started in screen session 'ipfs-daemon'"
+        echo "   Use 'screen -r ipfs-daemon' to view logs"
+    else
+        # Fallback: start in background with nohup
+        nohup ipfs daemon > ~/.ipfs/daemon.log 2>&1 &
+        echo "💡 IPFS daemon started in background"
+        echo "   Logs available at: ~/.ipfs/daemon.log"
+    fi
+    
+    # Wait a moment for daemon to start
+    echo "⏳ Waiting for IPFS daemon to start..."
+    sleep 3
+    
+    # Verify daemon is running
+    for i in {1..10}; do
+        if curl -s --connect-timeout 1 http://127.0.0.1:5001/api/v0/id >/dev/null 2>&1; then
+            echo "✅ IPFS daemon is now running!"
+            return 0
+        fi
+        sleep 1
+    done
+    
+    echo "⚠️ IPFS daemon might not be ready yet. The encoder will check again when it starts."
+}
+
 # Check if dependencies are installed
 echo ""
 echo "🔍 Checking dependencies..."
@@ -93,6 +169,27 @@ if [[ "$NEED_INSTALL" == "true" ]]; then
     echo "📦 Installing missing dependencies..."
     install_deps
     echo "✅ Dependencies installed!"
+fi
+
+# Check IPFS installation and daemon status
+echo ""
+echo "📦 Checking IPFS..."
+
+if ! check_command ipfs; then
+    echo "⚠️ IPFS not found. Installing IPFS..."
+    install_ipfs
+    echo "✅ IPFS installed!"
+else
+    echo "✅ IPFS is installed"
+fi
+
+# Check if IPFS daemon is running
+if ! curl -s --connect-timeout 3 http://127.0.0.1:5001/api/v0/id >/dev/null 2>&1; then
+    echo "⚠️ IPFS daemon is not running. Starting IPFS daemon..."
+    start_ipfs_daemon
+    echo "✅ IPFS daemon started!"
+else
+    echo "✅ IPFS daemon is running"
 fi
 
 # Check Node.js version
