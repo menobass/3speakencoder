@@ -95,6 +95,7 @@ For the **simplest experience**, use the one-command installers shown above. The
 **Prerequisites:**
 - Node.js 18+ ([nodejs.org](https://nodejs.org/))
 - FFmpeg ([ffmpeg.org](https://ffmpeg.org/))
+- IPFS ([ipfs.tech](https://ipfs.tech/)) - *Auto-installed by easy installer*
 - Git
 
 ```bash
@@ -102,6 +103,11 @@ git clone https://github.com/menobass/3speakencoder.git
 cd 3speakencoder
 npm install
 echo "HIVE_USERNAME=your-hive-username" > .env
+
+# Start IPFS daemon (in another terminal or background)
+ipfs daemon &
+
+# Start the encoder
 npm start
 ```
 
@@ -269,13 +275,38 @@ brew install ffmpeg
 choco install ffmpeg
 ```
 
-#### 4. IPFS Upload Failures
+#### 4. IPFS Connection Issues
+**The install script handles IPFS automatically, but if you have issues:**
+
+```bash
+# Check if IPFS is installed
+ipfs version
+
+# Check if IPFS daemon is running
+curl -s http://127.0.0.1:5001/api/v0/id
+
+# Start IPFS daemon manually if needed
+ipfs daemon
+```
+
+**Install IPFS manually (if needed):**
+```bash
+# Linux/Mac with install script (recommended)
+curl -sSL https://raw.githubusercontent.com/menobass/3speakencoder/main/install.sh | bash
+
+# Or install manually:
+# Linux: Download from https://dist.ipfs.tech/kubo/
+# Mac: brew install ipfs
+# Then: ipfs init && ipfs daemon
+```
+
+#### 5. IPFS Upload Failures
 - Check network connectivity
 - Verify IPFS gateway is accessible
 - Large files may take time to upload
 - TANK MODE provides maximum upload reliability
 
-#### 5. Smart Retry System
+#### 6. Smart Retry System
 The encoder includes intelligent retry logic:
 - **5 retry attempts** with exponential backoff
 - **Result caching** - skips wasteful re-processing on retries

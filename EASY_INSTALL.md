@@ -28,12 +28,14 @@ docker run -d --name 3speak-encoder \
 
 ### For Windows Users:
 1. **Install Node.js**: Download from [nodejs.org](https://nodejs.org) (choose LTS)
-2. **Install FFmpeg**: 
+2. **Install FFmpeg & IPFS**: 
    ```bash
    # Using chocolatey (run as admin)
    choco install ffmpeg
    
-   # Or download from https://ffmpeg.org/download.html
+   # Install IPFS
+   # Download IPFS from https://dist.ipfs.tech/kubo/
+   # Or use the automated installer (recommended)
    ```
 3. **Get the encoder**:
    ```bash
@@ -56,8 +58,8 @@ docker run -d --name 3speak-encoder \
    # Install homebrew if you don't have it
    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
    
-   # Install everything at once
-   brew install node ffmpeg git
+   # Install everything at once  
+   brew install node ffmpeg git ipfs
    ```
 2. **Get and start encoder**:
    ```bash
@@ -69,23 +71,33 @@ docker run -d --name 3speak-encoder \
    ```
 
 ### For Linux Users:
+**🎯 Recommended: Use the one-command installer:**
+```bash
+curl -sSL https://raw.githubusercontent.com/menobass/3speakencoder/main/install.sh | bash
+```
+
+**Or manual installation:**
 ```bash
 # Ubuntu/Debian
 sudo apt update && sudo apt install -y nodejs npm ffmpeg git
-git clone https://github.com/3speak/video-encoder
-cd video-encoder
+# Note: IPFS will be auto-installed by our installer, or install manually from ipfs.tech
+git clone https://github.com/menobass/3speakencoder
+cd 3speakencoder
 npm install
 echo "HIVE_USERNAME=your-hive-username" > .env
+# Start IPFS daemon: ipfs daemon &
 npm start
 ```
 
 ## 🎮 What You'll See
 
 Once running, open **http://localhost:3001** in your browser for a beautiful dashboard showing:
-- ✅ System status
+- ✅ System status (including IPFS connection)
 - 🎬 Active encoding jobs  
 - 📊 Your contribution stats
 - 🔧 Health monitoring
+
+**💡 Note:** The install script automatically handles IPFS installation and daemon management!
 
 ## 💡 Why Help?
 
