@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  # 3Speak Video Encoder
+  encoder:
+    build: .
+    image: ghcr.io/menobass/3speakencoder:latest
+    container_name: 3speak-encoder
+    restart: unless-stopped
+    
+    # Port mapping
+    ports:
+      - "3001:3001"  # Dashboard
+      - "3002:3002"  # API
+    
+    # Environment configuration
+    environment:
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+      - HIVE_USERNAME=${HIVE_USERNAME:-your-hive-username}
+      - WORK_DIR=/app/work
+      
+      # Optional: Custom gateway
+      # - GATEWAY_URL=https://encoder-gateway.infra.3speak.tv
+      
+      # Optional: IPFS configuration
+      # - IPFS_GATEWAY=https://ipfs.3speak.tv
+      
+    # Volume mounts
+    volumes:
+      # Persistent work directory
+      - encoder_work:/app/work
+      
+      # Optional: Custom config directory
+      # - ./config:/app/config:ro
+      
+      # Optional: Logs persistence
+      - encoder_logs:/app/logs
+    
+    # Resource limits (optional)
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+          cpus: '1.0'
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: Monitoring with Grafana/Prometheus
+  # monitoring:
+  #   image: prom/prometheus
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+
+# Named volumes
+volumes:
+  encoder_work:
+    driver: local
+  encoder_logs:
+    driver: local
+
+# Networks (optional for isolation)
+networks:
+  default:
+    name: 3speak-network

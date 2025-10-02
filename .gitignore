@@ -1,0 +1,135 @@
+# ========================
+# SECURITY - NEVER COMMIT
+# ========================
+
+# Environment variables with secrets
+.env
+.env.*
+!.env.example
+
+# Private keys and credentials
+*.key
+*.pem
+*.p12
+*.pfx
+*secret*
+*private*
+*credential*
+# Config files that might contain secrets
+*config.json
+!*config.example.json
+!tsconfig.json
+!jest.config.json
+!package.json
+test-config.json
+
+# API keys and tokens
+api-keys.txt
+tokens.txt
+*.token
+
+# ========================
+# BUILD & DEPENDENCIES
+# ========================
+
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Build output
+dist/
+build/
+lib/
+coverage/
+
+# ========================
+# DEVELOPMENT FILES
+# ========================
+
+# Logs
+logs/
+*.log
+debug.log
+error.log
+
+# Temporary files
+temp/
+tmp/
+work/
+*.tmp
+*.temp
+
+# IDE and editors
+.vscode/settings.json
+.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ========================
+# VIDEO PROCESSING
+# ========================
+
+# Video files and output
+input/
+output/
+encode-output/
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+*.flv
+*.m3u8
+# *.ts  # Commented out - would ignore TypeScript source files!
+# Instead, ignore video .ts files in specific directories:
+input/*.ts
+output/*.ts
+encode-output/*.ts
+work/*.ts
+*.m4s
+
+# ========================
+# DEPLOYMENT
+# ========================
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Old encoder config (if migrating)
+~/.spk-encoder/
+.spk-encoder/
+
+# ========================
+# TESTING & LOCAL DEV
+# ========================
+
+# Test files with real data
+test-real-*
+local-test-*
+dev-test-*
+test-direct-api-mode.js
+
+# Local development overrides
+local.json
+dev.json
+
+# Backup files
+*.bak
+*.backup
+*.old

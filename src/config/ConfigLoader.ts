@@ -1,0 +1,125 @@
+import { z } from 'zod';
+import { config } from 'dotenv';
+
+// Load environment variables from .env files (in priority order)
+config({ path: '.env.local' }); // Load .env.local first (highest priority)
+config({ path: '.env' });       // Then .env (fallback)
+
+// Configuration schema validation
+const ConfigSchema = z.object({
+  node: z.object({
+    name: z.string(),
+    privateKey: z.string().optional(),
+    publicKey: z.string().optional(),
+    cryptoAccounts: z.object({
+      hive: z.string()
+    }).optional()
+  }),
+  gateway_client: z.object({
+    gateway_url: z.string().url(),
+    queue_max_length: z.number().default(1),
+    queue_concurrency: z.number().default(1),
+    async_uploads: z.boolean().default(false)
+  }).optional(),
+  remote_gateway: z.object({
+    enabled: z.boolean(),
+    api: z.string().url()
+  }),
+  ipfs: z.object({
+    apiAddr: z.string().default('/ip4/127.0.0.1/tcp/5001'), // For downloads only
+    threespeak_endpoint: z.string().default('http://65.21.201.94:5002') // Direct upload endpoint
+  }).optional(),
+  encoder: z.object({
+    temp_dir: z.string().optional(),
+    ffmpeg_path: z.string().optional(),
+    hardware_acceleration: z.boolean().default(true),
+    max_concurrent_jobs: z.number().default(1)
+  }).optional(),
+  direct_api: z.object({
+    enabled: z.boolean().default(false),
+    port: z.number().default(3002),
+    api_key: z.string().optional()
+  }).optional()
+});
+
+export type EncoderConfig = z.infer<typeof ConfigSchema>;
+
+export async function loadConfig(): Promise<EncoderConfig> {
+  try {
+    // Build configuration from environment variables
+    const configData = {
+      node: {
+        name: process.env.NODE_NAME || '3speak-encoder-node',
+        privateKey: process.env.ENCODER_PRIVATE_KEY,
+        publicKey: process.env.ENCODER_PUBLIC_KEY,
+        cryptoAccounts: {
+          hive: process.env.HIVE_USERNAME || ''
+        }
+      },
+      gateway_client: {
+        gateway_url: process.env.GATEWAY_URL || 'https://encoder-gateway.infra.3speak.tv',
+        queue_max_length: parseInt(process.env.QUEUE_MAX_LENGTH || '1'),
+        queue_concurrency: parseInt(process.env.QUEUE_CONCURRENCY || '1'),
+        async_uploads: process.env.ASYNC_UPLOADS === 'true'
+      },
+      remote_gateway: {
+        enabled: process.env.REMOTE_GATEWAY_ENABLED !== 'false',
+        api: process.env.GATEWAY_URL || 'https://encoder-gateway.infra.3speak.tv'
+      },
+      ipfs: {
+        apiAddr: process.env.IPFS_API_ADDR || '/ip4/127.0.0.1/tcp/5001',
+        threespeak_endpoint: process.env.THREESPEAK_IPFS_ENDPOINT || 'http://65.21.201.94:5002'
+      },
+      encoder: {
+        temp_dir: process.env.TEMP_DIR,
+        ffmpeg_path: process.env.FFMPEG_PATH,
+        hardware_acceleration: process.env.HARDWARE_ACCELERATION !== 'false',
+        max_concurrent_jobs: parseInt(process.env.MAX_CONCURRENT_JOBS || '1')
+      },
+      direct_api: {
+        enabled: process.env.DIRECT_API_ENABLED === 'true',
+        port: parseInt(process.env.DIRECT_API_PORT || '3002'),
+        api_key: process.env.DIRECT_API_KEY
+      }
+    };
+    
+    // Validate config with Zod
+    const config = ConfigSchema.parse(configData);
+    
+    return config;
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      throw new Error(`Invalid configuration: ${error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ')}`);
+    }
+    
+    throw new Error(`Could not load config from environment variables: ${error}`);
+  }
+}
+
+export function getDefaultConfig(): Partial<EncoderConfig> {
+  return {
+    gateway_client: {
+      gateway_url: 'https://encoder-gateway.infra.3speak.tv',
+      queue_max_length: 1,
+      queue_concurrency: 1,
+      async_uploads: false
+    },
+    remote_gateway: {
+      enabled: true,
+      api: 'https://encoder-gateway.infra.3speak.tv'
+    },
+    ipfs: {
+      apiAddr: '/ip4/127.0.0.1/tcp/5001', // For downloads only
+      threespeak_endpoint: 'http://65.21.201.94:5002' // Direct upload endpoint
+    },
+    encoder: {
+        hardware_acceleration: true,
+        max_concurrent_jobs: 1
+      },
+      direct_api: {
+        enabled: false,
+        port: 3002,
+        api_key: undefined
+      }
+    };
+}

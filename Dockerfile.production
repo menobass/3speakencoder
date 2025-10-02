@@ -1,0 +1,48 @@
+# 3Speak Video Encoder
+# Official Docker image for easy deployment
+
+FROM node:18-alpine
+
+# Install FFmpeg
+RUN apk add --no-cache ffmpeg
+
+# Create app directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci --only=production
+
+# Copy app source
+COPY . .
+
+# Build TypeScript
+RUN npm run build
+
+# Create work directory for video processing
+RUN mkdir -p /app/work && chmod 777 /app/work
+
+# Expose ports
+EXPOSE 3001 3002
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD curl -f http://localhost:3001/api/health || exit 1
+
+# Default environment variables
+ENV NODE_ENV=production
+ENV LOG_LEVEL=info
+ENV WORK_DIR=/app/work
+
+# Start the encoder
+CMD ["npm", "start"]
+
+# Labels for metadata
+LABEL org.opencontainers.image.title="3Speak Video Encoder"
+LABEL org.opencontainers.image.description="Decentralized video encoding for Web3"
+LABEL org.opencontainers.image.url="https://3speak.tv"
+LABEL org.opencontainers.image.source="https://github.com/menobass/3speakencoder"
+LABEL org.opencontainers.image.vendor="3Speak"
+LABEL org.opencontainers.image.licenses="MIT"
