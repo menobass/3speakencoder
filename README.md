@@ -13,8 +13,10 @@ curl -sSL https://raw.githubusercontent.com/menobass/3speakencoder/main/install.
 
 **Windows:**
 - **PowerShell (Recommended):** `iwr -useb https://raw.githubusercontent.com/menobass/3speakencoder/main/install.ps1 | iex`
-- **Batch file:** Download and run `install.bat` from releases
+- **Command Prompt:** Download and run `install.bat` directly
 - **Manual:** Follow the manual installation guide below
+
+*Both installers automatically handle Node.js, FFmpeg, and IPFS installation + daemon management!*
 
 **Docker (All Platforms):**
 ```bash
@@ -110,6 +112,34 @@ ipfs daemon &
 
 # Start the encoder
 npm start
+```
+
+**Windows Manual Installation:**
+```cmd
+git clone https://github.com/menobass/3speakencoder.git
+cd 3speakencoder
+npm install
+echo HIVE_USERNAME=your-hive-username > .env
+
+REM Start IPFS daemon in background
+start /b ipfs daemon
+
+REM Start the encoder
+npm start
+```
+
+**PowerShell Manual Installation:**
+```powershell
+git clone https://github.com/menobass/3speakencoder.git
+cd 3speakencoder
+npm install
+"HIVE_USERNAME=your-hive-username" | Out-File -FilePath ".env" -Encoding UTF8
+
+# Start IPFS daemon in background
+Start-Process -FilePath "ipfs" -ArgumentList "daemon" -WindowStyle Hidden
+
+# Start the encoder
+npm start  
 ```
 
 ## 🌐 Web Dashboard
@@ -272,8 +302,9 @@ sudo yum install ffmpeg
 # macOS
 brew install ffmpeg
 
-# Windows
+# Windows (automatic via installers, or manual)
 choco install ffmpeg
+# Or download from https://ffmpeg.org/download.html
 ```
 
 #### 4. IPFS Connection Issues
@@ -290,6 +321,19 @@ curl -s http://127.0.0.1:5001/api/v0/id
 ipfs daemon
 ```
 
+**Windows-specific IPFS commands:**
+```powershell
+# PowerShell: Check IPFS daemon
+Invoke-RestMethod -Uri "http://127.0.0.1:5001/api/v0/id" -Method Post
+
+# Command Prompt: Start IPFS daemon
+start /b ipfs daemon
+
+# Install IPFS on Windows
+choco install ipfs
+# Or download from: https://dist.ipfs.tech/kubo/
+```
+
 **Install IPFS manually (if needed):**
 ```bash
 # Linux/Mac with install script (recommended)
@@ -298,8 +342,18 @@ curl -sSL https://raw.githubusercontent.com/menobass/3speakencoder/main/install.
 # Or install manually:
 # Linux: Download from https://dist.ipfs.tech/kubo/
 # Mac: brew install ipfs
+# Windows: choco install ipfs OR download from https://dist.ipfs.tech/kubo/
 # Then: ipfs init && ipfs daemon
 ```
+
+**Windows Installers Features:**
+- ✅ **Automatic dependency installation** (Node.js, FFmpeg, IPFS)
+- ✅ **IPFS daemon management** (init + auto-start)
+- ✅ **Desktop shortcuts** and Start Menu entries
+- ✅ **Multiple modes** (Gateway, Direct API, Dual)
+- ✅ **API key generation** for direct modes
+- ✅ **Colored output** and progress indicators
+- ✅ **Error handling** with helpful guidance
 
 #### 5. IPFS Upload Failures
 - Check network connectivity

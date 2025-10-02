@@ -26,33 +26,54 @@ docker run -d --name 3speak-encoder \
 
 ## 📦 Current Easy Installation
 
-### For Windows Users:
+### 🚀 For Windows Users (SUPER EASY!):
+
+**🎯 One-Command Installation (PowerShell):**
+```powershell
+iwr -useb https://raw.githubusercontent.com/menobass/3speakencoder/main/install.ps1 | iex
+```
+
+**🎯 Alternative (Command Prompt):**
+- Download `install.bat` from [GitHub releases](https://github.com/menobass/3speakencoder/releases)
+- Double-click to run
+
+**✨ What the installer does automatically:**
+- ✅ Checks and installs Node.js (if needed)
+- ✅ Installs FFmpeg via Chocolatey
+- ✅ Installs and initializes IPFS
+- ✅ Starts IPFS daemon automatically
+- ✅ Downloads the latest encoder
+- ✅ Creates desktop shortcuts
+- ✅ Configures based on your preferences
+- ✅ Offers to start immediately
+
+**🛠️ Manual Windows Installation (if you prefer):**
 1. **Install Node.js**: Download from [nodejs.org](https://nodejs.org) (choose LTS)
-2. **Install FFmpeg & IPFS**: 
-   ```bash
+2. **Install dependencies**: 
+   ```cmd
    # Using chocolatey (run as admin)
-   choco install ffmpeg
+   choco install ffmpeg ipfs
    
-   # Install IPFS
-   # Download IPFS from https://dist.ipfs.tech/kubo/
-   # Or use the automated installer (recommended)
+   # Initialize IPFS
+   ipfs init
    ```
 3. **Get the encoder**:
-   ```bash
-   git clone https://github.com/3speak/video-encoder
-   cd video-encoder
+   ```cmd
+   git clone https://github.com/menobass/3speakencoder
+   cd 3speakencoder
    npm install
    ```
 4. **Configure** (just your Hive username):
-   ```bash
+   ```cmd
    echo HIVE_USERNAME=your-hive-username > .env
    ```
-5. **Start encoding**:
-   ```bash
+5. **Start IPFS and encoder**:
+   ```cmd
+   start /b ipfs daemon
    npm start
    ```
 
-### For Mac Users:
+### 🍎 For Mac Users (Alternative Manual Method):
 1. **Install dependencies**:
    ```bash
    # Install homebrew if you don't have it
@@ -60,6 +81,7 @@ docker run -d --name 3speak-encoder \
    
    # Install everything at once  
    brew install node ffmpeg git ipfs
+   ipfs init
    ```
 2. **Get and start encoder**:
    ```bash
@@ -67,27 +89,51 @@ docker run -d --name 3speak-encoder \
    cd 3speakencoder
    npm install
    echo "HIVE_USERNAME=your-hive-username" > .env
+   ipfs daemon &
    npm start
    ```
 
-### For Linux Users:
-**🎯 Recommended: Use the one-command installer:**
+### 🐧 For Linux/Mac Users:
+**🎯 One-Command Installation:**
 ```bash
 curl -sSL https://raw.githubusercontent.com/menobass/3speakencoder/main/install.sh | bash
 ```
 
-**Or manual installation:**
+**✨ What this does automatically:**
+- ✅ Checks for all dependencies (Node.js, FFmpeg, Git, etc.)
+- ✅ Installs IPFS (Kubo v0.23.0) if missing
+- ✅ Initializes and starts IPFS daemon
+- ✅ Downloads the latest encoder
+- ✅ Sets up your configuration interactively
+- ✅ Creates shortcuts and starts encoding immediately
+
+## 🔧 Quick Troubleshooting
+
+**❌ "IPFS not found" or connection errors:**
 ```bash
-# Ubuntu/Debian
-sudo apt update && sudo apt install -y nodejs npm ffmpeg git
-# Note: IPFS will be auto-installed by our installer, or install manually from ipfs.tech
-git clone https://github.com/menobass/3speakencoder
-cd 3speakencoder
-npm install
-echo "HIVE_USERNAME=your-hive-username" > .env
-# Start IPFS daemon: ipfs daemon &
-npm start
+# Check if IPFS is running
+ipfs id
+
+# If not running, start it:
+ipfs daemon
 ```
+
+**❌ Windows: "Execution policy" error:**
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+**❌ Permission denied (Linux/Mac):**
+```bash
+# Make install script executable
+chmod +x install.sh
+./install.sh
+```
+
+**❌ Still having issues?**
+- Windows users: Try running PowerShell or Command Prompt as Administrator
+- All users: Check firewall settings for IPFS (port 4001)
+- Restart your terminal/command prompt after installation
 
 ## 🎮 What You'll See
 
