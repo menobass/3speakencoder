@@ -56,7 +56,11 @@ export class DashboardService {
       res.json({
         ...this.nodeStatus,
         activeJobDetails: Array.from(this.activeJobs.values()),
-        recentJobs: this.jobHistory.slice(-10)
+        recentJobs: this.jobHistory.slice(-10),
+        gatewayStatus: {
+          connected: this.gatewayConnected,
+          stats: this.nodeStatus.gatewayStats
+        }
       });
     });
     

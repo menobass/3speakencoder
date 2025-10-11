@@ -442,13 +442,49 @@
                 this.jobs = new Map();
                 this.availableJobs = [];
                 this.failedJobs = [];
-                this.gatewayConnected = false;
+                this.gatewayConnected = null; // null = unknown, true = connected, false = disconnected
                 this.reconnectAttempts = 0;
                 this.maxReconnectAttempts = 10;
                 
                 this.connect();
                 this.startUptimeCounter();
+                this.loadInitialStatus(); // Load status immediately
                 this.loadFailedJobs();
+            }
+
+            async loadInitialStatus() {
+                try {
+                    // Fetch both status and jobs data
+                    const [statusResponse, jobsResponse] = await Promise.all([
+                        fetch('/api/status'),
+                        fetch('/api/jobs')
+                    ]);
+                    
+                    const statusData = await statusResponse.json();
+                    const jobsData = await jobsResponse.json();
+                    
+                    // Update node status
+                    this.updateNodeStatus(statusData);
+                    
+                    // Update gateway status from either endpoint
+                    const gatewayStatus = statusData.gatewayStatus || jobsData.gateway;
+                    if (gatewayStatus) {
+                        this.updateGatewayStatus({ 
+                            connected: gatewayStatus.connected 
+                        });
+                    }
+                    
+                    // Load available jobs if present
+                    if (jobsData.available && jobsData.available.length > 0) {
+                        this.updateAvailableJobs(jobsData.available);
+                    }
+                } catch (error) {
+                    console.error('Failed to load initial status:', error);
+                    // Set gateway as unknown on error
+                    const statusEl = document.getElementById('gatewayStatus');
+                    statusEl.textContent = '⚠️ Loading...';
+                    statusEl.style.color = '#f59e0b';
+                }
             }
 
             connect() {
@@ -605,12 +641,16 @@
                 this.gatewayConnected = statusData.connected;
                 const statusEl = document.getElementById('gatewayStatus');
                 
-                if (this.gatewayConnected) {
+                if (this.gatewayConnected === true) {
                     statusEl.textContent = '🟢 Connected';
                     statusEl.style.color = '#10b981';
-                } else {
+                } else if (this.gatewayConnected === false) {
                     statusEl.textContent = '🔴 Disconnected';
                     statusEl.style.color = '#ef4444';
+                } else {
+                    // null/unknown state
+                    statusEl.textContent = '⚠️ Checking...';
+                    statusEl.style.color = '#f59e0b';
                 }
             }
 

@@ -22,8 +22,11 @@ export class ThreeSpeakEncoder {
   private dashboard?: DashboardService;
   private directApi?: DirectApiService;
   private jobQueue: JobQueue;
-  private isRunning = false;
-  private activeJobs = new Map<string, VideoJob>();
+  private isRunning: boolean = false;
+  private activeJobs: Map<string, any> = new Map();
+  private gatewayFailureCount: number = 0;
+  private readonly maxGatewayFailures: number = 3; // Mark offline after 3 consecutive failures
+  private lastGatewaySuccess: Date = new Date();
   private startTime = new Date();
 
   constructor(config: EncoderConfig, dashboard?: DashboardService) {
@@ -100,6 +103,9 @@ export class ThreeSpeakEncoder {
       }
       
       this.isRunning = true;
+      // Reset gateway failure tracking on successful start
+      this.gatewayFailureCount = 0;
+      this.lastGatewaySuccess = new Date();
       await this.updateDashboard();
       logger.info('🎯 3Speak Encoder is fully operational!');
       
@@ -119,6 +125,9 @@ export class ThreeSpeakEncoder {
         logger.debug('Failed to get IPFS peer ID for dashboard:', error);
       }
 
+      // Determine gateway status based on failure count
+      const isGatewayOnline = this.gatewayFailureCount < this.maxGatewayFailures;
+
       this.dashboard.updateNodeStatus({
         online: this.isRunning,
         registered: this.isRunning,
@@ -127,7 +136,14 @@ export class ThreeSpeakEncoder {
         activeJobs: this.activeJobs.size,
         totalJobs: this.jobQueue.getTotalCount(),
         lastJobCheck: new Date().toISOString(),
-        nodeName: this.config.node?.name || 'Unknown'
+        nodeName: this.config.node?.name || 'Unknown',
+        gatewayStatus: {
+          connected: isGatewayOnline,
+          failureCount: this.gatewayFailureCount,
+          maxFailures: this.maxGatewayFailures,
+          lastSuccess: this.lastGatewaySuccess.toISOString(),
+          timeSinceLastSuccess: Date.now() - this.lastGatewaySuccess.getTime()
+        }
       });
     }
   }
@@ -229,8 +245,16 @@ export class ThreeSpeakEncoder {
   }
 
   private startDashboardHeartbeat(): void {
-    // Update dashboard status every 30 seconds to keep it fresh
-    cron.schedule('*/30 * * * * *', async () => {
+    // Update dashboard status every 30 seconds, or every 10 seconds if gateway has issues
+    const updateInterval = this.gatewayFailureCount > 0 ? 10 : 30;
+    const cronPattern = `*/${updateInterval} * * * * *`;
+    
+    // Cancel any existing heartbeat first
+    if ((this as any)._heartbeatJob) {
+      (this as any)._heartbeatJob.destroy();
+    }
+    
+    (this as any)._heartbeatJob = cron.schedule(cronPattern, async () => {
       if (!this.isRunning) return;
       
       try {
@@ -240,6 +264,8 @@ export class ThreeSpeakEncoder {
         logger.debug('⚠️ Dashboard heartbeat failed:', error);
       }
     });
+    
+    logger.info(`💓 Dashboard heartbeat started (${updateInterval}s interval)`);
   }
 
   private async detectAndHandleStuckJobs(): Promise<void> {
@@ -566,6 +592,17 @@ export class ThreeSpeakEncoder {
       // First, update dashboard with available jobs and gateway stats
       await this.updateDashboardWithGatewayInfo();
       
+      // Reset failure count on success
+      const wasFailing = this.gatewayFailureCount > 0;
+      this.gatewayFailureCount = 0;
+      this.lastGatewaySuccess = new Date();
+      
+      // If we recovered from failures, restart heartbeat with normal interval
+      if (wasFailing) {
+        logger.info('🔄 Gateway connection recovered - switching to normal heartbeat interval');
+        this.startDashboardHeartbeat();
+      }
+      
       // Then check if we can accept more jobs
       if (this.activeJobs.size >= (this.config.encoder?.max_concurrent_jobs || 1)) {
         logger.debug('🔄 Max concurrent jobs reached, skipping job acquisition');
@@ -582,11 +619,22 @@ export class ThreeSpeakEncoder {
         logger.debug('🔍 No gateway jobs assigned to us');
       }
     } catch (error) {
-      logger.warn('⚠️ Gateway polling failed:', error);
+      // Increment failure count
+      this.gatewayFailureCount++;
+      const timeSinceLastSuccess = Date.now() - this.lastGatewaySuccess.getTime();
       
-      // Update dashboard with gateway disconnection
-      if (this.dashboard) {
-        this.dashboard.updateGatewayStatus(false);
+      logger.warn(`⚠️ Gateway polling failed (${this.gatewayFailureCount}/${this.maxGatewayFailures}):`, error);
+      
+      // Only mark as offline after multiple consecutive failures
+      if (this.gatewayFailureCount >= this.maxGatewayFailures) {
+        logger.warn(`🚨 Gateway marked offline after ${this.gatewayFailureCount} consecutive failures`);
+        if (this.dashboard) {
+          this.dashboard.updateGatewayStatus(false);
+        }
+      } else if (this.gatewayFailureCount === 1) {
+        // First failure - switch to faster heartbeat
+        logger.info('🔄 First gateway failure - switching to faster heartbeat for monitoring');
+        this.startDashboardHeartbeat();
       }
     }
   }
@@ -610,7 +658,7 @@ export class ThreeSpeakEncoder {
       logger.debug(`📊 Dashboard updated: ${availableJobs.length} available jobs`);
     } catch (error) {
       logger.debug('⚠️ Failed to update dashboard with gateway info:', error);
-      this.dashboard.updateGatewayStatus(false);
+      // Don't immediately mark offline here - let checkForNewJobs handle the failure tracking
     }
   }
 
@@ -733,31 +781,36 @@ export class ThreeSpeakEncoder {
   }
 
   /**
-   * Manually complete a job that was processed but failed to report completion
+   * Manually reset gateway failure tracking (useful for dashboard)
    */
-  async manualCompleteJob(jobId: string, result: any): Promise<void> {
-    logger.info(`🏁 Attempting to manually complete job: ${jobId}`);
+  resetGatewayStatus(): void {
+    this.gatewayFailureCount = 0;
+    this.lastGatewaySuccess = new Date();
+    logger.info('🔄 Gateway failure tracking reset manually');
     
-    try {
-      // Call the gateway finishJob API directly
-      const finishResponse = await this.gateway.finishJob(jobId, result);
-      logger.info(`✅ Successfully completed job ${jobId} manually`);
-      logger.info(`🎉 Gateway response:`, finishResponse);
-      
-      // Update dashboard
-      if (this.dashboard) {
-        this.dashboard.completeJob(jobId, finishResponse);
-      }
-      
-    } catch (error) {
-      logger.error(`❌ Failed to manually complete job ${jobId}:`, error);
-      
-      // Update dashboard with failure
-      if (this.dashboard) {
-        this.dashboard.failJob(jobId, `Manual completion failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      }
-      
-      throw error;
-    }
+    // Update dashboard immediately
+    this.updateDashboard();
+    
+    // Restart heartbeat with normal interval
+    this.startDashboardHeartbeat();
+  }
+
+  /**
+   * Get current gateway health status
+   */
+  getGatewayHealth(): { 
+    failureCount: number; 
+    maxFailures: number; 
+    isOnline: boolean; 
+    lastSuccess: Date; 
+    timeSinceLastSuccess: number 
+  } {
+    return {
+      failureCount: this.gatewayFailureCount,
+      maxFailures: this.maxGatewayFailures,
+      isOnline: this.gatewayFailureCount < this.maxGatewayFailures,
+      lastSuccess: this.lastGatewaySuccess,
+      timeSinceLastSuccess: Date.now() - this.lastGatewaySuccess.getTime()
+    };
   }
 }
