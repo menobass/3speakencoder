@@ -120,10 +120,34 @@ export class GatewayClient {
     }
 
     const jws = await this.identity.createJWS({ job_id: jobId });
-    
-    await this.client.post('/api/v0/gateway/acceptJob', {
-      jws
-    });
+
+    try {
+      await this.client.post('/api/v0/gateway/acceptJob', {
+        jws
+      });
+      logger.debug(`✅ Successfully accepted job: ${jobId}`);
+    } catch (error) {
+      // Handle "job already accepted by another encoder" scenario
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        const errorMessage = error.response?.data?.message || error.message;
+
+        const isAlreadyAccepted = status === 400 || status === 409 || (
+          errorMessage.toLowerCase().includes('already') ||
+          errorMessage.toLowerCase().includes('accepted') ||
+          errorMessage.toLowerCase().includes('not assigned') ||
+          errorMessage.toLowerCase().includes('invalid state')
+        );
+
+        if (isAlreadyAccepted) {
+          logger.warn(`⚠️ Job ${jobId} was already accepted by another encoder: ${errorMessage}`);
+          throw new Error(`Job already accepted by another encoder: ${errorMessage}`);
+        }
+      }
+
+      // Re-throw other errors
+      throw error;
+    }
   }
 
   async rejectJob(jobId: string): Promise<void> {
@@ -165,18 +189,58 @@ export class GatewayClient {
     }
 
     // Use the same format as the old working encoder
-    const jws = await this.identity.createJWS({ 
+    const jws = await this.identity.createJWS({
       job_id: jobId,
       output: {
         cid: cid
       }
     });
-    
-    const response = await this.client.post('/api/v0/gateway/finishJob', {
-      jws
-    });
-    
-    return response.data;
+
+    try {
+      const response = await this.client.post('/api/v0/gateway/finishJob', {
+        jws
+      });
+
+      return response.data;
+    } catch (error) {
+      // Handle "job already completed by another encoder" scenario
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        const errorMessage = error.response?.data?.message || error.message;
+
+        // Check for duplicate completion indicators
+        const isDuplicateCompletion = status === 500 && (
+          errorMessage.toLowerCase().includes('already') ||
+          errorMessage.toLowerCase().includes('completed') ||
+          errorMessage.toLowerCase().includes('duplicate') ||
+          errorMessage.toLowerCase().includes('not assigned') ||
+          errorMessage.toLowerCase().includes('invalid state')
+        );
+
+        if (isDuplicateCompletion) {
+          logger.warn(`⚠️ Job ${jobId} was already completed by another encoder - treating as success`);
+          logger.warn(`📋 Duplicate completion details: ${errorMessage}`);
+
+          // Return synthetic success response
+          return {
+            success: true,
+            message: 'Job already completed by another encoder',
+            duplicate: true,
+            originalError: errorMessage
+          };
+        }
+
+        // Check for other gateway state errors that indicate the job is in an unexpected state
+        const isStateError = status === 400 || status === 409;
+        if (isStateError) {
+          logger.warn(`⚠️ Job ${jobId} state conflict: ${errorMessage}`);
+          throw new Error(`Job state conflict: ${errorMessage}`);
+        }
+      }
+
+      // Re-throw other errors
+      throw error;
+    }
   }
 
 
@@ -216,6 +280,35 @@ export class GatewayClient {
   async getJobStatus(jobId: string): Promise<any> {
     const response = await this.client.get(`/api/v0/gateway/jobstatus/${jobId}`);
     return response.data;
+  }
+
+  /**
+   * Validate that a job is assigned to this encoder before processing
+   */
+  async validateJobOwnership(jobId: string): Promise<boolean> {
+    try {
+      const jobStatus = await this.getJobStatus(jobId);
+
+      if (!jobStatus) {
+        logger.warn(`⚠️ Job ${jobId} not found in gateway`);
+        return false;
+      }
+
+      // Check if job is in a valid state for this encoder
+      const validStates = ['assigned', 'accepted', 'running'];
+      if (!validStates.includes(jobStatus.status)) {
+        logger.warn(`⚠️ Job ${jobId} is in invalid state: ${jobStatus.status}`);
+        return false;
+      }
+
+      // If the gateway tracks assigned encoder, we could check it here
+      // For now, we assume if we got the job via getJob(), it's ours
+
+      return true;
+    } catch (error) {
+      logger.warn(`⚠️ Failed to validate job ownership for ${jobId}:`, error);
+      return false;
+    }
   }
 
   async getAvailableJobs(): Promise<VideoJob[]> {

@@ -496,6 +496,22 @@ export class ThreeSpeakEncoder {
       // Complete the job with gateway
       const finishResponse = await this.gateway.finishJob(jobId, gatewayResult);
       
+      // Check if this was a duplicate completion (job already done by another encoder)
+      if (finishResponse.duplicate) {
+        logger.info(`🎯 Job ${jobId} was already completed by another encoder - our work was successful but redundant`);
+        logger.info(`💡 This is normal in distributed systems - another encoder got there first`);
+        
+        // Still clear cached result and mark as completed locally
+        this.jobQueue.clearCachedResult(jobId);
+        this.jobQueue.completeJob(jobId, result);
+        if (this.dashboard) {
+          this.dashboard.completeJob(jobId, result);
+        }
+        
+        logger.info(`✅ Job ${jobId} marked as completed (duplicate completion handled)`);
+        return; // Exit early - don't throw error
+      }
+      
       // Clear cached result on successful completion
       this.jobQueue.clearCachedResult(jobId);
       
