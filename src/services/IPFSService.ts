@@ -33,9 +33,65 @@ export class IPFSService {
       this.peerId = identity.ID || identity.id;
       
       logger.info(`📂 IPFS connected: ${this.peerId}`);
+      
+      // 🛡️ TANK MODE: Verify 3Speak IPFS node health
+      await this.checkIPFSHealth();
+      
     } catch (error) {
       logger.error('❌ Failed to connect to IPFS:', error);
       throw error;
+    }
+  }
+
+  /**
+   * 🛡️ TANK MODE: Check IPFS node health before operations
+   */
+  private async checkIPFSHealth(): Promise<void> {
+    const threeSpeakIPFS = this.config.ipfs?.threespeak_endpoint || 'http://65.21.201.94:5002';
+    const axios = await import('axios');
+    
+    try {
+      logger.info(`🏥 Checking 3Speak IPFS node health...`);
+      
+      // Check node is responding
+      const idResponse = await axios.default.post(`${threeSpeakIPFS}/api/v0/id`, null, {
+        timeout: 10000
+      });
+      
+      logger.info(`✅ 3Speak IPFS node is healthy`);
+      
+      // Check repo stats to see if node has capacity
+      try {
+        const statsResponse = await axios.default.post(`${threeSpeakIPFS}/api/v0/repo/stat`, null, {
+          timeout: 10000
+        });
+        
+        let stats;
+        if (typeof statsResponse.data === 'string') {
+          stats = JSON.parse(statsResponse.data);
+        } else {
+          stats = statsResponse.data;
+        }
+        
+        const usedGB = (stats.RepoSize || 0) / (1024 * 1024 * 1024);
+        const numObjects = stats.NumObjects || 0;
+        
+        logger.info(`📊 IPFS Stats: ${usedGB.toFixed(2)}GB used, ${numObjects} objects`);
+        
+        // Warn if repo is getting large (might affect performance)
+        if (usedGB > 100) {
+          logger.warn(`⚠️ IPFS repo is large (${usedGB.toFixed(2)}GB) - performance may be affected`);
+        }
+        
+      } catch (statsError) {
+        // Stats check is nice-to-have, not critical
+        logger.debug('Could not fetch repo stats (non-critical)');
+      }
+      
+    } catch (error: any) {
+      logger.warn(`⚠️ 3Speak IPFS health check failed:`, error.message);
+      logger.warn(`⚠️ Uploads may fail or be slow - consider checking IPFS node status`);
+      // Don't throw - we'll try to proceed anyway
     }
   }
 
@@ -143,8 +199,11 @@ export class IPFSService {
       
       logger.info(`✅ File uploaded to 3Speak IPFS: ${hash}`);
       
-      // TANK MODE: Pin + Announce for maximum reliability
-      await this.pinAndAnnounce(hash);
+      // 🛡️ TANK MODE: Bulletproof pin with verification (only if requested)
+      if (pin) {
+        logger.info(`🛡️ TANK MODE: Ensuring ${hash} is bulletproof pinned...`);
+        await this.pinAndAnnounce(hash);
+      }
       
       return hash;
     } catch (error) {
@@ -163,9 +222,11 @@ export class IPFSService {
         
         const result = await this.performDirectoryUpload(dirPath);
         
-        // TANK MODE: Pin + Announce for maximum reliability
+        // 🛡️ TANK MODE: Bulletproof pin with verification
+        logger.info(`🛡️ TANK MODE: Ensuring ${result} is bulletproof pinned...`);
         await this.pinAndAnnounce(result);
         
+        logger.info(`🎯 Directory upload complete and verified: ${result}`);
         return result;
       } catch (error: any) {
         lastError = error;
@@ -323,30 +384,123 @@ export class IPFSService {
     return dirHash;
   }
 
+  /**
+   * 🛡️ TANK MODE: Bulletproof pinning with verification and retries
+   * This function WILL NOT return until content is verified pinned or max retries exhausted
+   */
   private async pinAndAnnounce(hash: string): Promise<void> {
     const threeSpeakIPFS = this.config.ipfs?.threespeak_endpoint || 'http://65.21.201.94:5002';
     const axios = await import('axios');
+    const maxRetries = 5; // More retries for pin operations
+    const baseDelay = 2000; // Start with 2 second delay
+    
+    logger.info(`🛡️ TANK MODE: Initiating bulletproof pin for ${hash}`);
 
-    try {
-      // Step 2: Pin the content for persistence
-      logger.info(`📌 Pinning content: ${hash}`);
-      await axios.default.post(`${threeSpeakIPFS}/api/v0/pin/add?arg=${hash}`, null, {
-        timeout: 30000
-      });
-      logger.info(`✅ Content pinned: ${hash}`);
-
-      // Step 3: Announce to DHT for faster discovery  
-      logger.info(`📢 Announcing to DHT: ${hash}`);
-      await axios.default.post(`${threeSpeakIPFS}/api/v0/dht/provide?arg=${hash}`, null, {
-        timeout: 30000
-      });
-      logger.info(`✅ Content announced to DHT: ${hash}`);
-
-    } catch (error) {
-      // Don't fail the whole upload if pin/announce fails
-      logger.warn(`⚠️ Pin/Announce failed for ${hash}:`, error);
-      logger.info(`📤 Content still uploaded successfully: ${hash}`);
+    // Step 1: Pin with retry logic
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        logger.info(`📌 Pinning attempt ${attempt}/${maxRetries}: ${hash}`);
+        
+        // Pin with recursive flag and longer timeout
+        await axios.default.post(
+          `${threeSpeakIPFS}/api/v0/pin/add?arg=${hash}&recursive=true&progress=true`,
+          null,
+          { timeout: 120000 } // 2 minute timeout for complex structures
+        );
+        
+        logger.info(`✅ Pin command succeeded for ${hash}`);
+        break; // Success, exit retry loop
+        
+      } catch (error: any) {
+        const isLastAttempt = attempt === maxRetries;
+        
+        if (isLastAttempt) {
+          logger.error(`❌ Pin failed after ${maxRetries} attempts for ${hash}:`, error.message);
+          throw new Error(`CRITICAL: Pin failed after ${maxRetries} attempts - ${error.message}`);
+        }
+        
+        const delay = Math.min(baseDelay * Math.pow(2, attempt - 1), 30000); // Max 30s
+        logger.warn(`⚠️ Pin attempt ${attempt} failed, retrying in ${delay}ms:`, error.message);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
     }
+
+    // Step 2: VERIFY the pin actually worked
+    logger.info(`🔍 Verifying pin status for ${hash}`);
+    const pinVerified = await this.verifyPinStatus(hash, threeSpeakIPFS);
+    
+    if (!pinVerified) {
+      throw new Error(`CRITICAL: Pin verification failed for ${hash} - content may not be persisted!`);
+    }
+    
+    logger.info(`✅ Pin verified successfully: ${hash}`);
+
+    // Step 3: Announce to DHT (best effort, don't fail if this fails)
+    try {
+      logger.info(`📢 Announcing to DHT: ${hash}`);
+      await axios.default.post(
+        `${threeSpeakIPFS}/api/v0/dht/provide?arg=${hash}`,
+        null,
+        { timeout: 60000 }
+      );
+      logger.info(`✅ Content announced to DHT: ${hash}`);
+    } catch (error: any) {
+      // DHT announce is nice-to-have, not critical
+      logger.warn(`⚠️ DHT announcement failed (non-critical): ${error.message}`);
+    }
+    
+    logger.info(`🎯 TANK MODE: ${hash} is fully pinned, verified, and announced!`);
+  }
+
+  /**
+   * Verify that content is actually pinned by checking pin list
+   */
+  private async verifyPinStatus(hash: string, ipfsEndpoint: string, maxRetries: number = 3): Promise<boolean> {
+    const axios = await import('axios');
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        logger.info(`� Pin verification attempt ${attempt}/${maxRetries} for ${hash}`);
+        
+        // Check if hash is in pin list
+        const response = await axios.default.post(
+          `${ipfsEndpoint}/api/v0/pin/ls?arg=${hash}&type=all`,
+          null,
+          { timeout: 30000 }
+        );
+        
+        // Parse response
+        let pinData;
+        if (typeof response.data === 'string') {
+          pinData = JSON.parse(response.data);
+        } else {
+          pinData = response.data;
+        }
+        
+        // Check if our hash is in the pins
+        if (pinData && pinData.Keys && pinData.Keys[hash]) {
+          const pinType = pinData.Keys[hash].Type;
+          logger.info(`✅ Pin verified: ${hash} (type: ${pinType})`);
+          return true;
+        }
+        
+        logger.warn(`⚠️ Hash ${hash} not found in pin list (attempt ${attempt})`);
+        
+        // Wait before retry
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+        
+      } catch (error: any) {
+        logger.warn(`⚠️ Pin verification attempt ${attempt} failed:`, error.message);
+        
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+    }
+    
+    return false;
   }
 
   private async getAllFiles(dirPath: string): Promise<string[]> {
@@ -423,6 +577,44 @@ export class IPFSService {
       logger.info('🗑️ IPFS garbage collection completed');
     } catch (error) {
       logger.warn('⚠️ IPFS garbage collection failed:', error);
+    }
+  }
+
+  /**
+   * 🛡️ TANK MODE: Final verification that content is still pinned
+   * Call this before reporting job as complete to gateway
+   */
+  async verifyContentPersistence(hash: string): Promise<boolean> {
+    const threeSpeakIPFS = this.config.ipfs?.threespeak_endpoint || 'http://65.21.201.94:5002';
+    
+    logger.info(`🔐 TANK MODE: Final persistence check for ${hash}`);
+    
+    // Verify pin status
+    const isPinned = await this.verifyPinStatus(hash, threeSpeakIPFS, 3);
+    
+    if (!isPinned) {
+      logger.error(`🚨 CRITICAL: Content ${hash} is NOT pinned!`);
+      return false;
+    }
+    
+    // Try to fetch the content to ensure it's actually retrievable
+    try {
+      const axios = await import('axios');
+      logger.info(`🔍 Verifying content is retrievable: ${hash}`);
+      
+      // Just check if we can get the stat (don't download the whole thing)
+      await axios.default.post(
+        `${threeSpeakIPFS}/api/v0/object/stat?arg=${hash}`,
+        null,
+        { timeout: 30000 }
+      );
+      
+      logger.info(`✅ Content ${hash} is retrievable`);
+      return true;
+      
+    } catch (error: any) {
+      logger.error(`🚨 Content ${hash} exists but is not retrievable:`, error.message);
+      return false;
     }
   }
 }

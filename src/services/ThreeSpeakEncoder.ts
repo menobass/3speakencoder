@@ -517,6 +517,15 @@ export class ThreeSpeakEncoder {
         master_playlist: masterOutput.uri
       };
       
+      // 🛡️ TANK MODE: Final verification before reporting to gateway
+      logger.info(`🛡️ TANK MODE: Final persistence verification before gateway notification`);
+      const isContentPersisted = await this.ipfs.verifyContentPersistence(masterOutput.ipfsHash);
+      
+      if (!isContentPersisted) {
+        throw new Error(`CRITICAL: Content ${masterOutput.ipfsHash} failed final persistence verification! Cannot report to gateway.`);
+      }
+      
+      logger.info(`✅ Content persistence verified - safe to report to gateway`);
       logger.info(`📋 Sending result to gateway: ${JSON.stringify(gatewayResult)}`);
       
       // Complete the job with gateway
