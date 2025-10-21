@@ -296,6 +296,27 @@ export class JobQueue {
   }
 
   /**
+   * 🚨 FIX: Cleanup old cached results to prevent memory leaks
+   */
+  cleanupOldCache(): void {
+    const maxCacheAge = 24 * 60 * 60 * 1000; // 24 hours
+    const now = Date.now();
+    let cleaned = 0;
+    
+    for (const [jobId, result] of this.cachedResults) {
+      const job = this.jobs.get(jobId);
+      if (!job || !job.updated_at || (now - new Date(job.updated_at).getTime()) > maxCacheAge) {
+        this.cachedResults.delete(jobId);
+        cleaned++;
+      }
+    }
+    
+    if (cleaned > 0) {
+      logger.info(`🗑️ Cleaned ${cleaned} old cached results from memory`);
+    }
+  }
+
+  /**
    * Get statistics about cached results
    */
   getCacheStats(): { count: number; jobIds: string[] } {

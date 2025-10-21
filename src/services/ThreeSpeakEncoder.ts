@@ -266,6 +266,37 @@ export class ThreeSpeakEncoder {
     });
     
     logger.info(`💓 Dashboard heartbeat started (${updateInterval}s interval)`);
+    
+    // 🚨 FIX: Start memory management timer
+    this.startMemoryManagement();
+  }
+
+  private startMemoryManagement(): void {
+    setInterval(() => {
+      // Clean up old cached results
+      this.jobQueue.cleanupOldCache();
+      
+      // Monitor memory usage
+      const usage = process.memoryUsage();
+      const heapMB = Math.round(usage.heapUsed / 1024 / 1024);
+      const totalMB = Math.round(usage.heapTotal / 1024 / 1024);
+      
+      logger.debug(`🧠 Memory: ${heapMB}MB heap / ${totalMB}MB total`);
+      
+      if (heapMB > 1500) { // Warn at 1.5GB
+        logger.warn(`⚠️ HIGH MEMORY USAGE: ${heapMB}MB heap / ${totalMB}MB total - potential leak!`);
+        
+        // Force garbage collection if available
+        if (global.gc) {
+          global.gc();
+          const newUsage = process.memoryUsage();
+          const newHeapMB = Math.round(newUsage.heapUsed / 1024 / 1024);
+          logger.info(`🗑️ Forced GC: ${heapMB}MB → ${newHeapMB}MB (freed ${heapMB - newHeapMB}MB)`);
+        }
+      }
+    }, 5 * 60 * 1000); // Every 5 minutes
+    
+    logger.info(`🧠 Memory management started (5min intervals)`);
   }
 
   private async detectAndHandleStuckJobs(): Promise<void> {
@@ -531,13 +562,13 @@ export class ThreeSpeakEncoder {
       // Complete the job with gateway
       const finishResponse = await this.gateway.finishJob(jobId, gatewayResult);
       
+      // 🚨 FIX: Always clear cached result to prevent memory leak
+      this.jobQueue.clearCachedResult(jobId);
+      
       // Check if this was a duplicate completion (job already done by another encoder)
       if (finishResponse.duplicate) {
         logger.info(`🎯 Job ${jobId} was already completed by another encoder - our work was successful but redundant`);
         logger.info(`💡 This is normal in distributed systems - another encoder got there first`);
-        
-        // Still clear cached result and mark as completed locally
-        this.jobQueue.clearCachedResult(jobId);
         this.jobQueue.completeJob(jobId, result);
         if (this.dashboard) {
           this.dashboard.completeJob(jobId, result);

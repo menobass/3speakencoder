@@ -134,20 +134,25 @@ export class IPFSService {
       // Extract IPFS hash from URI
       const hash = this.extractIPFSHash(uri);
       
-      logger.info(`📥 Downloading ${hash} to ${outputPath}`);
+      logger.info(`📥 Streaming download ${hash} to ${outputPath}`);
       
-      // Download file from IPFS
-      const chunks: Uint8Array[] = [];
+      // 🚨 FIX: Stream download instead of loading into memory
+      const fs = await import('fs');
+      const writeStream = fs.createWriteStream(outputPath);
+      let totalBytes = 0;
+      
       for await (const chunk of this.client.cat(hash)) {
-        chunks.push(chunk);
+        writeStream.write(chunk);
+        totalBytes += chunk.length;
       }
       
-      // Write to file
-      const { writeFile } = await import('fs/promises');
-      const buffer = Buffer.concat(chunks);
-      await writeFile(outputPath, buffer);
+      writeStream.end();
+      await new Promise<void>((resolve, reject) => {
+        writeStream.on('finish', () => resolve());
+        writeStream.on('error', reject);
+      });
       
-      logger.info(`✅ Downloaded ${buffer.length} bytes`);
+      logger.info(`✅ Streamed ${(totalBytes / 1024 / 1024).toFixed(1)}MB`);
     } catch (error) {
       logger.error('❌ IPFS download failed:', error);
       throw error;
@@ -160,19 +165,22 @@ export class IPFSService {
       const threeSpeakIPFS = 'http://65.21.201.94:5002';
       const axios = await import('axios');
       const FormData = await import('form-data');
-      const fs = await import('fs/promises');
+      const fs = await import('fs');
+      const fsPromises = await import('fs/promises');
       const path = await import('path');
       
-      const buffer = await fs.readFile(filePath);
+      const stats = await fsPromises.stat(filePath);
       const fileName = path.basename(filePath);
       
-      logger.info(`📤 Uploading ${buffer.length} bytes to 3Speak IPFS: ${fileName}`);
+      logger.info(`📤 Streaming ${(stats.size / 1024 / 1024).toFixed(1)}MB to 3Speak IPFS: ${fileName}`);
       
+      // 🚨 FIX: Use stream instead of loading entire file into memory
       const form = new FormData.default();
-      form.append('file', buffer, fileName);
+      const fileStream = fs.createReadStream(filePath);
+      form.append('file', fileStream, fileName);
       
       // Calculate timeout based on file size
-      const timeoutMs = Math.max(60000, 60000 + Math.floor(buffer.length / (10 * 1024 * 1024)) * 30000);
+      const timeoutMs = Math.max(60000, 60000 + Math.floor(stats.size / (10 * 1024 * 1024)) * 30000);
       logger.info(`⏱️ Upload timeout set to: ${Math.floor(timeoutMs / 1000)}s`);
       
       const response = await axios.default.post(`${threeSpeakIPFS}/api/v0/add`, form, {
@@ -259,15 +267,15 @@ export class IPFSService {
     const form = new FormData.default();
     let totalSize = 0;
     
-    // Add all files to form data with their relative paths
+    // 🚨 FIX: Add all files to form data with streams instead of buffers
     for (const filePath of files) {
       const relativePath = path.relative(dirPath, filePath);
-      const buffer = await fs.readFile(filePath);
       const stats = await fs.stat(filePath);
       totalSize += stats.size;
       
-      // Add file with proper path for directory structure
-      form.append('file', buffer, {
+      // Add file stream with proper path for directory structure
+      const fileStream = require('fs').createReadStream(filePath);
+      form.append('file', fileStream, {
         filename: relativePath,
         filepath: relativePath
       });

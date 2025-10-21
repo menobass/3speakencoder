@@ -5,8 +5,9 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "start": "tsx src/index.ts",
-    "dev": "tsx src/index.ts --watch",
+    "start": "node --expose-gc --max-old-space-size=8192 dist/index.js",
+    "start:dev": "tsx --expose-gc --max-old-space-size=8192 src/index.ts",
+    "dev": "tsx --expose-gc --max-old-space-size=8192 src/index.ts --watch",
     "setup": "tsx scripts/setup.ts",
     "test-services": "tsx src/test-services.ts",
     "build": "tsc",
