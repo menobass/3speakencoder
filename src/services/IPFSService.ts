@@ -191,6 +191,7 @@ export class IPFSService {
         maxBodyLength: Infinity,
         timeout: timeoutMs,
         maxRedirects: 3,
+        responseType: 'text', // 🚨 FIX: Ensure response is treated as text, not binary
         validateStatus: (status) => status < 400,
         onUploadProgress: (progressEvent) => {
           if (progressEvent.total) {
@@ -201,6 +202,12 @@ export class IPFSService {
           }
         }
       });
+      
+      // 🚨 FIX: Ensure we have text data, not binary
+      if (typeof response.data !== 'string') {
+        logger.error('❌ IPFS response is not text data - possible binary response leak');
+        throw new Error('IPFS returned non-text response data');
+      }
       
       const result = JSON.parse(response.data);
       const hash = result.Hash;
@@ -298,32 +305,41 @@ export class IPFSService {
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
         timeout: timeoutMs,
+        responseType: 'text', // 🚨 FIX: Ensure response is treated as text, not binary
         validateStatus: (status) => status < 400,
         onUploadProgress: (progressEvent) => {
           if (progressEvent.total) {
             const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
             if (percent % 25 === 0) { // Log every 25%
-              logger.info(`� Directory upload progress: ${percent}% (${(progressEvent.loaded / 1024 / 1024).toFixed(1)}MB)`);
+              logger.info(`📦 Directory upload progress: ${percent}% (${(progressEvent.loaded / 1024 / 1024).toFixed(1)}MB)`);
             }
           }
         }
       });
       
       // Parse response - should be newline-delimited JSON
+      // 🚨 FIX: Ensure we have text data, not binary
+      if (typeof response.data !== 'string') {
+        logger.error('❌ IPFS response is not text data - possible binary response leak');
+        throw new Error('IPFS returned non-text response data');
+      }
+      
       const lines = response.data.trim().split('\n');
       let directoryHash = '';
       
       // Find the directory hash (usually the last entry)
       for (const line of lines) {
-        let result;
-        if (typeof line === 'string') {
-          result = JSON.parse(line);
-        } else {
-          result = line;
-        }
-        
-        if (result.Name === '' || result.Name === dirPath || !result.Name) {
-          directoryHash = result.Hash;
+        try {
+          if (!line.trim()) continue; // Skip empty lines
+          
+          const result = JSON.parse(line);
+          
+          if (result.Name === '' || result.Name === dirPath || !result.Name) {
+            directoryHash = result.Hash;
+          }
+        } catch (parseError) {
+          logger.warn(`⚠️ Could not parse IPFS response line: ${line.substring(0, 100)}...`);
+          // Continue processing other lines
         }
       }
       
