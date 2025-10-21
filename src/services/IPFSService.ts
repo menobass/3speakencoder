@@ -274,7 +274,8 @@ export class IPFSService {
       totalSize += stats.size;
       
       // Add file stream with proper path for directory structure
-      const fileStream = require('fs').createReadStream(filePath);
+      const nodeFs = await import('fs');
+      const fileStream = nodeFs.createReadStream(filePath);
       form.append('file', fileStream, {
         filename: relativePath,
         filepath: relativePath
