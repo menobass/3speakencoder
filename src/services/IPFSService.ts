@@ -160,6 +160,9 @@ export class IPFSService {
   }
 
   async uploadFile(filePath: string, pin: boolean = false): Promise<string> {
+    // Declare stream outside try block for proper cleanup access
+    let fileStream: any = null;
+    
     try {
       // Upload directly to 3Speak IPFS instead of local node
       const threeSpeakIPFS = 'http://65.21.201.94:5002';
@@ -176,19 +179,16 @@ export class IPFSService {
       
       // 🚨 FIX: Use stream instead of loading entire file into memory
       const form = new FormData.default();
-      const fileStream = fs.createReadStream(filePath);
+      fileStream = fs.createReadStream(filePath);
       form.append('file', fileStream, fileName);
       
-      // 🚨 MEMORY SAFE: Clean up file stream function
-      const cleanupFileStream = () => {
+      fileStream.on('error', () => {
         try {
           if (!fileStream.destroyed) fileStream.destroy();
         } catch (e) {
           // Ignore cleanup errors
         }
-      };
-      
-      fileStream.on('error', cleanupFileStream);
+      });
       
       // Calculate timeout based on file size
       const timeoutMs = Math.max(60000, 60000 + Math.floor(stats.size / (10 * 1024 * 1024)) * 30000);
@@ -226,7 +226,11 @@ export class IPFSService {
       logger.info(`✅ File uploaded to 3Speak IPFS: ${hash}`);
       
       // Clean up file stream after successful upload
-      cleanupFileStream();
+      try {
+        if (!fileStream.destroyed) fileStream.destroy();
+      } catch (e) {
+        // Ignore cleanup errors
+      }
       
       // 🛡️ TANK MODE: Bulletproof pin with verification (only if requested)
       if (pin) {
@@ -237,7 +241,11 @@ export class IPFSService {
       return hash;
     } catch (error) {
       // 🚨 CRITICAL: Clean up file stream on error to prevent memory leak
-      cleanupFileStream();
+      try {
+        if (!fileStream.destroyed) fileStream.destroy();
+      } catch (e) {
+        // Ignore cleanup errors
+      }
       logger.error('❌ File upload to 3Speak IPFS failed:', error);
       throw error;
     }
