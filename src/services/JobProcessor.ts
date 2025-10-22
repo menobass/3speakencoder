@@ -43,7 +43,8 @@ export class JobProcessor {
         await this.gatewayClient.pingJob(jobId, status);
       } catch (error: any) {
         // Log but don't propagate errors to prevent memory leaks
-        logger.warn(`Failed to update gateway progress for ${jobId}:`, error.message);
+        const errorMsg = error?.message || error?.code || error?.toString() || 'Unknown error';
+        logger.warn(`Failed to update gateway progress for ${jobId}: ${errorMsg}`);
       }
     });
   }
