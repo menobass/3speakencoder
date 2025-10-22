@@ -299,6 +299,22 @@ export class ThreeSpeakEncoder {
     logger.info(`🧠 Memory management started (5min intervals)`);
   }
 
+  /**
+   * 🚨 MEMORY SAFE: Fire-and-forget ping job to prevent promise accumulation
+   */
+  private safePingJob(jobId: string, status: any): void {
+    // Use setImmediate to ensure this runs asynchronously without creating
+    // a promise that could accumulate in memory during network issues
+    setImmediate(async () => {
+      try {
+        await this.gateway.pingJob(jobId, status);
+      } catch (error: any) {
+        // Log but don't propagate errors to prevent memory leaks
+        logger.warn(`Failed to update gateway progress for ${jobId}:`, error.message);
+      }
+    });
+  }
+
   private async detectAndHandleStuckJobs(): Promise<void> {
     const stuckJobs = this.jobQueue.detectStuckJobs(3600000); // 1 hour
     
@@ -525,11 +541,11 @@ export class ThreeSpeakEncoder {
             this.dashboard.updateJobProgress(job.id, progress.percent);
           }
           
-          // Update progress with gateway
-          this.gateway.pingJob(jobId, { 
+          // Update progress with gateway (fire-and-forget to prevent memory leaks)
+          this.safePingJob(jobId, { 
             status: JobStatus.RUNNING,
             progress: progress.percent 
-          }).catch((err: any) => logger.warn('Failed to update gateway progress:', err));
+          });
         });
         
         // Cache the result before attempting gateway notification
@@ -717,11 +733,11 @@ export class ThreeSpeakEncoder {
 
       // Process the video
       const result = await this.processor.processVideo(job, (progress: EncodingProgress) => {
-        // Update progress
-        this.gateway.pingJob(jobId, { 
+        // Update progress (fire-and-forget to prevent memory leaks)
+        this.safePingJob(jobId, { 
           status: JobStatus.RUNNING,
           progress: progress.percent 
-        }).catch((err: any) => logger.warn('Failed to update progress:', err));
+        });
       });
 
       // Transform result to gateway-expected format

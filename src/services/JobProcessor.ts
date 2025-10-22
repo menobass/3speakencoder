@@ -32,6 +32,22 @@ export class JobProcessor {
     }
   }
 
+  /**
+   * 🚨 MEMORY SAFE: Fire-and-forget ping job to prevent promise accumulation
+   */
+  private safePingJob(jobId: string, status: any): void {
+    // Use setImmediate to ensure this runs asynchronously without creating
+    // a promise that could accumulate in memory during network issues
+    setImmediate(async () => {
+      try {
+        await this.gatewayClient.pingJob(jobId, status);
+      } catch (error: any) {
+        // Log but don't propagate errors to prevent memory leaks
+        logger.warn(`Failed to update gateway progress for ${jobId}:`, error.message);
+      }
+    });
+  }
+
   private async processGatewayJob(job: VideoJob): Promise<void> {
     const jobId = job.id;
     
@@ -48,11 +64,11 @@ export class JobProcessor {
       const result = await this.videoProcessor.processVideo(job, (progress) => {
         this.jobQueue.updateProgress(jobId, progress.percent);
         
-        // Update gateway with progress
-        this.gatewayClient.pingJob(jobId, { 
+        // Update gateway with progress (fire-and-forget to prevent memory leaks)
+        this.safePingJob(jobId, { 
           status: JobStatus.RUNNING,
           progress: progress.percent 
-        }).catch((err) => logger.warn('Failed to update gateway progress:', err));
+        });
       });
 
       // Upload results and complete job

@@ -21,8 +21,28 @@ export class GatewayClient {
       headers: {
         'Content-Type': 'application/json',
         'User-Agent': '3Speak-Encoder-Modern/1.0.0'
-      }
+      },
+      // 🚨 MEMORY SAFE: Additional config to prevent memory leaks
+      maxRedirects: 3,
+      maxContentLength: 50 * 1024 * 1024, // 50MB max response size
+      maxBodyLength: 50 * 1024 * 1024,    // 50MB max request size
     });
+
+    // 🚨 MEMORY SAFE: Add interceptors to clean up failed requests
+    this.client.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        // Clean up any large response data on error to prevent memory leaks
+        if (error.response && error.response.data) {
+          // Don't hold onto large error response bodies
+          if (typeof error.response.data === 'object' && 
+              JSON.stringify(error.response.data).length > 1000) {
+            error.response.data = '[Large response data removed to prevent memory leak]';
+          }
+        }
+        throw error;
+      }
+    );
   }
 
   async initialize(): Promise<void> {
