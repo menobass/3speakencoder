@@ -179,6 +179,17 @@ export class IPFSService {
       const fileStream = fs.createReadStream(filePath);
       form.append('file', fileStream, fileName);
       
+      // 🚨 MEMORY SAFE: Clean up file stream function
+      const cleanupFileStream = () => {
+        try {
+          if (!fileStream.destroyed) fileStream.destroy();
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+      };
+      
+      fileStream.on('error', cleanupFileStream);
+      
       // Calculate timeout based on file size
       const timeoutMs = Math.max(60000, 60000 + Math.floor(stats.size / (10 * 1024 * 1024)) * 30000);
       logger.info(`⏱️ Upload timeout set to: ${Math.floor(timeoutMs / 1000)}s`);
@@ -214,6 +225,9 @@ export class IPFSService {
       
       logger.info(`✅ File uploaded to 3Speak IPFS: ${hash}`);
       
+      // Clean up file stream after successful upload
+      cleanupFileStream();
+      
       // 🛡️ TANK MODE: Bulletproof pin with verification (only if requested)
       if (pin) {
         logger.info(`🛡️ TANK MODE: Ensuring ${hash} is bulletproof pinned...`);
@@ -222,6 +236,8 @@ export class IPFSService {
       
       return hash;
     } catch (error) {
+      // 🚨 CRITICAL: Clean up file stream on error to prevent memory leak
+      cleanupFileStream();
       logger.error('❌ File upload to 3Speak IPFS failed:', error);
       throw error;
     }
@@ -275,6 +291,8 @@ export class IPFSService {
     let totalSize = 0;
     
     // 🚨 FIX: Add all files to form data with streams instead of buffers
+    const fileStreams: any[] = []; // Track streams for cleanup
+    
     for (const filePath of files) {
       const relativePath = path.relative(dirPath, filePath);
       const stats = await fs.stat(filePath);
@@ -283,6 +301,8 @@ export class IPFSService {
       // Add file stream with proper path for directory structure
       const nodeFs = await import('fs');
       const fileStream = nodeFs.createReadStream(filePath);
+      fileStreams.push(fileStream); // Track for cleanup
+      
       form.append('file', fileStream, {
         filename: relativePath,
         filepath: relativePath
@@ -290,6 +310,17 @@ export class IPFSService {
       
       logger.info(`📤 Adding to directory: ${relativePath} (${(stats.size / 1024 / 1024).toFixed(2)}MB)`);
     }
+    
+    // 🚨 MEMORY SAFE: Function to clean up all file streams
+    const cleanupAllStreams = () => {
+      fileStreams.forEach(stream => {
+        try {
+          if (!stream.destroyed) stream.destroy();
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+      });
+    };
     
     logger.info(`📦 Total directory size: ${(totalSize / 1024 / 1024).toFixed(1)}MB in ${files.length} files`);
     
@@ -348,9 +379,15 @@ export class IPFSService {
       }
       
       logger.info(`✅ Directory uploaded successfully: ${directoryHash}`);
+      
+      // Clean up all file streams after successful upload
+      cleanupAllStreams();
+      
       return directoryHash;
       
     } catch (error: any) {
+      // 🚨 CRITICAL: Clean up all file streams on error to prevent memory leak
+      cleanupAllStreams();
       logger.error('❌ UnixFS directory upload failed:', error.message);
       throw error;
     }

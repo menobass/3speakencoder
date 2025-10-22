@@ -265,12 +265,37 @@ export class VideoProcessor {
           response.data.pipe(writer);
           
           await new Promise<void>((resolve, reject) => {
+            // 🚨 MEMORY SAFE: Ensure streams are destroyed on completion/error
+            const cleanup = () => {
+              try {
+                if (!response.data.destroyed) response.data.destroy();
+                if (!writer.destroyed) writer.destroy();
+              } catch (e) {
+                // Ignore cleanup errors
+              }
+            };
+            
             writer.on('finish', () => {
               logger.info(`✅ Successfully downloaded video from ${gateway}`);
+              cleanup();
               resolve();
             });
-            writer.on('error', reject);
-            response.data.on('error', reject);
+            
+            writer.on('error', (err: any) => {
+              cleanup();
+              reject(err);
+            });
+            
+            response.data.on('error', (err: any) => {
+              cleanup();
+              reject(err);
+            });
+            
+            // 🚨 CRITICAL: Handle aborted streams explicitly
+            response.data.on('aborted', () => {
+              cleanup();
+              reject(new Error('Download stream was aborted'));
+            });
           });
           
           return; // Success, exit the function
