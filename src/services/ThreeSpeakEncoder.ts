@@ -428,7 +428,7 @@ export class ThreeSpeakEncoder {
         await this.processGatewayJob(job);
       }
     } catch (error) {
-      logger.error(`❌ Job ${job.id} failed:`, error);
+      logger.error(`❌ Job ${job.id} failed:`, cleanErrorForLogging(error));
       
       // Determine if this error is retryable
       const isRetryable = this.isRetryableError(error);
@@ -786,7 +786,7 @@ export class ThreeSpeakEncoder {
       logger.info(`🛡️ TANK MODE: Content uploaded, pinned, and announced to DHT`);
 
     } catch (error) {
-      logger.error(`❌ Job ${jobId} failed:`, error);
+      logger.error(`❌ Job ${jobId} failed:`, cleanErrorForLogging(error));
       
       try {
         await this.gateway.failJob(jobId, {

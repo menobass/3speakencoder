@@ -6,6 +6,7 @@ import { WebhookService } from './WebhookService';
 import { JobQueue, QueuedJob } from './JobQueue';
 import { JobStatus } from '../types/index';
 import { logger } from './Logger';
+import { cleanErrorForLogging } from '../common/errorUtils.js';
 
 export class JobProcessor {
   private videoProcessor: VideoProcessor;
@@ -81,7 +82,7 @@ export class JobProcessor {
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error(`❌ Gateway job ${jobId} failed:`, error);
+      logger.error(`❌ Gateway job ${jobId} failed:`, cleanErrorForLogging(error));
       
       try {
         await this.gatewayClient.failJob(jobId, {
@@ -156,7 +157,7 @@ export class JobProcessor {
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error(`❌ Direct job ${jobId} failed:`, error);
+      logger.error(`❌ Direct job ${jobId} failed:`, cleanErrorForLogging(error));
       
       this.jobQueue.failJob(jobId, errorMessage);
       
