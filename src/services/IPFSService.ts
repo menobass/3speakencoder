@@ -182,13 +182,19 @@ export class IPFSService {
       fileStream = fs.createReadStream(filePath);
       form.append('file', fileStream, fileName);
       
-      fileStream.on('error', () => {
+      // 🚨 MEMORY SAFE: Use named function to avoid closure memory leaks
+      const handleStreamError = () => {
         try {
-          if (!fileStream.destroyed) fileStream.destroy();
+          if (fileStream && !fileStream.destroyed) {
+            fileStream.destroy();
+            fileStream.removeAllListeners(); // Remove all listeners to prevent leaks
+          }
         } catch (e) {
           // Ignore cleanup errors
         }
-      });
+      };
+      
+      fileStream.on('error', handleStreamError);
       
       // Calculate timeout based on file size
       const timeoutMs = Math.max(60000, 60000 + Math.floor(stats.size / (10 * 1024 * 1024)) * 30000);

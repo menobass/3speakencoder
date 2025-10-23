@@ -294,6 +294,32 @@ export class ThreeSpeakEncoder {
           logger.info(`🗑️ Forced GC: ${heapMB}MB → ${newHeapMB}MB (freed ${heapMB - newHeapMB}MB)`);
         }
       }
+      
+      // 🚨 EMERGENCY: Kill encoder if memory gets critically high
+      if (heapMB > 10000) { // 10GB emergency limit
+        logger.error(`🚨 CRITICAL MEMORY LEAK DETECTED: ${heapMB}MB heap usage!`);
+        logger.error(`🚨 This indicates a serious memory leak - encoder will restart to prevent crash`);
+        
+        // Log active jobs for debugging
+        logger.error(`🚨 Active jobs: ${Array.from(this.activeJobs.keys()).join(', ')}`);
+        
+        // Kill any active FFmpeg processes
+        import('child_process').then(({ exec }) => {
+          exec('pkill -9 ffmpeg', (error) => {
+            if (error) {
+              logger.warn('Could not kill FFmpeg processes:', error.message);
+            } else {
+              logger.info('🔪 Killed all FFmpeg processes');
+            }
+            
+            // Exit with error code to trigger restart
+            process.exit(1);
+          });
+        }).catch(() => {
+          // If we can't kill FFmpeg processes, just exit
+          process.exit(1);
+        });
+      }
     }, 5 * 60 * 1000); // Every 5 minutes
     
     logger.info(`🧠 Memory management started (5min intervals)`);

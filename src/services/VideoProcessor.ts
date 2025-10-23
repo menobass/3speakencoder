@@ -414,6 +414,12 @@ export class VideoProcessor {
         })
         .on('error', (error) => {
           logger.error(`❌ ${profile.name} encoding failed:`, cleanErrorForLogging(error));
+          // 🚨 CRITICAL: Kill FFmpeg process to prevent memory leak
+          try {
+            command.kill('SIGKILL');
+          } catch (e) {
+            // Ignore kill errors
+          }
           reject(error);
         });
 
@@ -428,6 +434,25 @@ export class VideoProcessor {
         command.addOption('-preset', 'medium');
         command.addOption('-crf', '23');
       }
+
+      // 🚨 MEMORY SAFE: Add timeout to prevent hung FFmpeg processes
+      const timeoutId = setTimeout(() => {
+        logger.warn(`⚠️ FFmpeg timeout for ${profile.name}, killing process...`);
+        try {
+          command.kill('SIGKILL');
+        } catch (e) {
+          // Ignore kill errors
+        }
+        reject(new Error(`FFmpeg encoding timeout for ${profile.name}`));
+      }, 30 * 60 * 1000); // 30 minute timeout per profile
+
+      command.on('end', () => {
+        clearTimeout(timeoutId); // Cancel timeout on success
+      });
+
+      command.on('error', () => {
+        clearTimeout(timeoutId); // Cancel timeout on error
+      });
 
       command.run();
     });
