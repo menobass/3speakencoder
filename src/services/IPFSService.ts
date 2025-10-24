@@ -269,9 +269,17 @@ export class IPFSService {
         
         // 🛡️ TANK MODE: Bulletproof pin with verification
         logger.info(`🛡️ TANK MODE: Ensuring ${result} is bulletproof pinned...`);
-        await this.pinAndAnnounce(result);
         
-        logger.info(`🎯 Directory upload complete and verified: ${result}`);
+        try {
+          await this.pinAndAnnounce(result);
+          logger.info(`🎯 Directory upload complete and verified: ${result}`);
+        } catch (pinError: any) {
+          // 🚨 FALLBACK: If pinning fails, still return the hash since content is uploaded
+          logger.warn(`⚠️ Pinning failed for ${result}, but content is uploaded: ${pinError.message}`);
+          logger.warn(`🚨 Job will complete without pinning to prevent stuck jobs`);
+          logger.info(`📤 Directory upload complete (no pinning): ${result}`);
+        }
+        
         return result;
       } catch (error: any) {
         lastError = error;
@@ -477,11 +485,18 @@ export class IPFSService {
       try {
         logger.info(`📌 Pinning attempt ${attempt}/${maxRetries}: ${hash}`);
         
-        // Pin with recursive flag and longer timeout
+        // Pin with recursive flag and more aggressive timeout
+        const pinTimeout = 60000; // 1 minute timeout (reduced from 2 minutes)
+        logger.info(`📌 Pin timeout set to ${pinTimeout/1000}s for hash ${hash}`);
+        
         await axios.default.post(
           `${threeSpeakIPFS}/api/v0/pin/add?arg=${hash}&recursive=true&progress=true`,
           null,
-          { timeout: 120000 } // 2 minute timeout for complex structures
+          { 
+            timeout: pinTimeout,
+            maxContentLength: 10 * 1024 * 1024, // 10MB response limit
+            maxBodyLength: 1024 * 1024 // 1MB request limit
+          }
         );
         
         logger.info(`✅ Pin command succeeded for ${hash}`);
@@ -513,16 +528,21 @@ export class IPFSService {
 
     // Step 3: Announce to DHT (best effort, don't fail if this fails)
     try {
-      logger.info(`📢 Announcing to DHT: ${hash}`);
+      logger.info(`📢 Starting DHT announcement for ${hash}...`);
+      const dhtTimeout = 30000; // Reduced to 30 seconds
+      
       await axios.default.post(
         `${threeSpeakIPFS}/api/v0/dht/provide?arg=${hash}`,
         null,
-        { timeout: 60000 }
+        { 
+          timeout: dhtTimeout,
+          maxContentLength: 1024 * 1024, // 1MB response limit
+        }
       );
-      logger.info(`✅ Content announced to DHT: ${hash}`);
+      logger.info(`✅ DHT announcement completed for ${hash}`);
     } catch (error: any) {
       // DHT announce is nice-to-have, not critical
-      logger.warn(`⚠️ DHT announcement failed (non-critical): ${error.message}`);
+      logger.warn(`⚠️ DHT announcement failed (non-critical) for ${hash}: ${error.message}`);
     }
     
     logger.info(`🎯 TANK MODE: ${hash} is fully pinned, verified, and announced!`);
