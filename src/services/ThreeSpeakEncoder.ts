@@ -9,6 +9,7 @@ import { DashboardService } from './DashboardService';
 import { DirectApiService } from './DirectApiService';
 import { JobQueue } from './JobQueue';
 import { JobProcessor } from './JobProcessor.js';
+import { PendingPinService } from './PendingPinService';
 import cron from 'node-cron';
 import { randomUUID } from 'crypto';
 import { cleanErrorForLogging } from '../common/errorUtils.js';
@@ -22,6 +23,7 @@ export class ThreeSpeakEncoder {
   private dashboard?: DashboardService;
   private directApi?: DirectApiService;
   private jobQueue: JobQueue;
+  private pendingPinService: PendingPinService;
   private isRunning: boolean = false;
   private activeJobs: Map<string, any> = new Map();
   private gatewayFailureCount: number = 0;
@@ -43,6 +45,7 @@ export class ThreeSpeakEncoder {
       5, // maxRetries (increased for gateway server issues)
       3 * 60 * 1000 // 3 minutes (reduced for faster recovery)
     );
+    this.pendingPinService = new PendingPinService();
     
     // Initialize DirectApiService if enabled
     if (config.direct_api?.enabled) {
@@ -67,6 +70,9 @@ export class ThreeSpeakEncoder {
       
       await this.processor.initialize();
       logger.info('✅ Video processor ready');
+      
+      await this.pendingPinService.initialize();
+      logger.info('✅ Pending pin service ready');
       
       // Set identity service for gateway client
       this.gateway.setIdentityService(this.identity);
@@ -106,6 +112,10 @@ export class ThreeSpeakEncoder {
       // Reset gateway failure tracking on successful start
       this.gatewayFailureCount = 0;
       this.lastGatewaySuccess = new Date();
+      
+      // Start background lazy pinning
+      this.startLazyPinning();
+      
       await this.updateDashboard();
       logger.info('🎯 3Speak Encoder is fully operational!');
       
@@ -765,6 +775,11 @@ export class ThreeSpeakEncoder {
           status: JobStatus.RUNNING,
           progress: progress.percent 
         });
+      }, (hash: string, error: Error) => {
+        // 🔄 LAZY PINNING: Queue failed pins for background retry
+        this.pendingPinService.addPendingPin(hash, jobId, 0, 'directory').catch(err => {
+          logger.warn(`⚠️ Failed to queue lazy pin for ${hash}:`, err.message);
+        });
       });
 
       // Transform result to gateway-expected format
@@ -895,5 +910,68 @@ export class ThreeSpeakEncoder {
       lastSuccess: this.lastGatewaySuccess,
       timeSinceLastSuccess: Date.now() - this.lastGatewaySuccess.getTime()
     };
+  }
+
+  /**
+   * 🔄 LAZY PINNING: Start background pinning of queued content during idle time
+   */
+  private startLazyPinning(): void {
+    // Process pending pins every 2 minutes during idle time
+    const lazyPinInterval = setInterval(async () => {
+      if (!this.isRunning) {
+        clearInterval(lazyPinInterval);
+        return;
+      }
+
+      // Only process during idle time (no active jobs)
+      if (this.activeJobs.size === 0) {
+        try {
+          const stats = await this.pendingPinService.getStats();
+          if (stats.totalPending > 0) {
+            logger.info(`🔄 LAZY PINNING: Processing ${stats.totalPending} pending pins during idle time`);
+            
+            // Process one pending pin
+            const success = await this.processSinglePendingPin();
+            if (success) {
+              logger.info(`✅ LAZY PINNING: Successfully processed 1 pending pin`);
+            }
+          }
+        } catch (error) {
+          logger.debug(`⚠️ LAZY PINNING: Background processing error:`, error);
+        }
+      } else {
+        logger.debug(`🔄 LAZY PINNING: Skipping (${this.activeJobs.size} active jobs)`);
+      }
+    }, 2 * 60 * 1000); // Every 2 minutes
+
+    logger.info(`🔄 LAZY PINNING: Background processing started (2min intervals)`);
+  }
+
+  /**
+   * Process a single pending pin from the queue
+   */
+  private async processSinglePendingPin(): Promise<boolean> {
+    const pendingPin = await this.pendingPinService.getNextPendingPin();
+    if (!pendingPin) {
+      return false;
+    }
+
+    try {
+      logger.info(`🔄 LAZY PINNING: Attempting to pin ${pendingPin.hash}`);
+      
+      // Use IPFS service to pin the content
+      await this.ipfs.pinHash(pendingPin.hash);
+      
+      // Mark as successful
+      await this.pendingPinService.markPinSuccessful(pendingPin.hash);
+      logger.info(`✅ LAZY PINNING: Successfully pinned ${pendingPin.hash} for job ${pendingPin.job_id}`);
+      
+      return true;
+    } catch (error) {
+      logger.warn(`⚠️ LAZY PINNING: Failed to pin ${pendingPin.hash}:`, error);
+      
+      // The PendingPinService will handle retry logic automatically
+      return false;
+    }
   }
 }

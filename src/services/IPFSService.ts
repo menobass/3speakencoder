@@ -257,7 +257,7 @@ export class IPFSService {
     }
   }
 
-  async uploadDirectory(dirPath: string, pin: boolean = false): Promise<string> {
+  async uploadDirectory(dirPath: string, pin: boolean = false, onPinFailed?: (hash: string, error: Error) => void): Promise<string> {
     const maxRetries = 3;
     let lastError: any;
     
@@ -277,6 +277,13 @@ export class IPFSService {
           // 🚨 FALLBACK: If pinning fails, still return the hash since content is uploaded
           logger.warn(`⚠️ Pinning failed for ${result}, but content is uploaded: ${pinError.message}`);
           logger.warn(`🚨 Job will complete without pinning to prevent stuck jobs`);
+          
+          // 🔄 LAZY PINNING: Queue for background retry
+          if (onPinFailed) {
+            onPinFailed(result, pinError);
+            logger.info(`📋 Queued ${result} for lazy pinning retry`);
+          }
+          
           logger.info(`📤 Directory upload complete (no pinning): ${result}`);
         }
         

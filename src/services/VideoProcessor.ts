@@ -136,7 +136,8 @@ export class VideoProcessor {
 
   async processVideo(
     job: VideoJob,
-    progressCallback?: (progress: EncodingProgress) => void
+    progressCallback?: (progress: EncodingProgress) => void,
+    onPinFailed?: (hash: string, error: Error) => void
   ): Promise<EncodedOutput[]> {
     const jobId = job.id;
     const workDir = join(this.tempDir, jobId);
@@ -188,7 +189,7 @@ export class VideoProcessor {
       
       // Upload the entire HLS structure to IPFS as a single directory
       logger.info(`📤 Uploading complete HLS structure to IPFS for job ${jobId}`);
-      const ipfsHash = await this.ipfsService.uploadDirectory(workDir);
+      const ipfsHash = await this.ipfsService.uploadDirectory(workDir, true, onPinFailed);
       
       // Create final outputs with master playlist
       const masterPlaylistUri = `ipfs://${ipfsHash}/manifest.m3u8`;
