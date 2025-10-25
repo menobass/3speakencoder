@@ -146,6 +146,12 @@ Write-Host ""
 Write-Host "📦 Installing dependencies..." -ForegroundColor Yellow
 npm install
 
+# 🔑 Generate persistent encoder identity key (CRITICAL for dashboard tracking)
+Write-Host ""
+Write-Host "🔑 Generating persistent encoder identity key..." -ForegroundColor Yellow
+$encoderPrivateKey = [Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+Write-Host "✅ Encoder identity key generated - this keeps your encoder identity consistent!" -ForegroundColor Green
+
 # Generate API key for direct modes
 $apiKey = $null
 if ($encoderMode -in @("direct", "dual")) {
@@ -175,6 +181,11 @@ REMOTE_GATEWAY_ENABLED=true
 # Direct API disabled for gateway-only mode
 DIRECT_API_ENABLED=false
 
+# 🔑 Persistent Encoder Identity (CRITICAL - keeps same identity across restarts)
+ENCODER_PRIVATE_KEY=$encoderPrivateKey
+# ⚠️  This is NOT your Hive key - it's for encoder authentication only
+# ✅ Keep this secret and backed up - losing it creates a "new encoder"
+
 # Logging
 LOG_LEVEL=info
 "@
@@ -189,6 +200,11 @@ DIRECT_API_ENABLED=true
 DIRECT_API_PORT=3002
 DIRECT_API_KEY=$apiKey
 
+# 🔑 Persistent Encoder Identity (CRITICAL - keeps same identity across restarts)
+ENCODER_PRIVATE_KEY=$encoderPrivateKey
+# ⚠️  This is NOT your Hive key - it's for encoder authentication only
+# ✅ Keep this secret and backed up - losing it creates a "new encoder"
+
 # Logging
 LOG_LEVEL=info
 "@
@@ -202,6 +218,11 @@ REMOTE_GATEWAY_ENABLED=true
 DIRECT_API_ENABLED=true
 DIRECT_API_PORT=3002
 DIRECT_API_KEY=$apiKey
+
+# 🔑 Persistent Encoder Identity (CRITICAL - keeps same identity across restarts)
+ENCODER_PRIVATE_KEY=$encoderPrivateKey
+# ⚠️  This is NOT your Hive key - it's for encoder authentication only
+# ✅ Keep this secret and backed up - losing it creates a "new encoder"
 
 # Logging
 LOG_LEVEL=info

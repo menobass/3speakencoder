@@ -134,6 +134,12 @@ echo.
 echo 📦 Installing dependencies...
 call npm install
 
+REM 🔑 Generate persistent encoder identity key (CRITICAL for dashboard tracking)
+echo.
+echo 🔑 Generating persistent encoder identity key...
+for /f "delims=" %%i in ('powershell -command "[Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))"') do set ENCODER_PRIVATE_KEY=%%i
+echo ✅ Encoder identity key generated - this keeps your encoder identity consistent!
+
 REM Generate API key for direct modes
 if "%ENCODER_MODE%"=="direct" (
     echo.
@@ -167,6 +173,11 @@ if "%ENCODER_MODE%"=="gateway" (
     echo # Direct API disabled for gateway-only mode
     echo DIRECT_API_ENABLED=false
     echo.
+    echo # 🔑 Persistent Encoder Identity ^(CRITICAL - keeps same identity across restarts^)
+    echo ENCODER_PRIVATE_KEY=%ENCODER_PRIVATE_KEY%
+    echo # ⚠️  This is NOT your Hive key - it's for encoder authentication only
+    echo # ✅ Keep this secret and backed up - losing it creates a "new encoder"
+    echo.
     echo # Logging
     echo LOG_LEVEL=info
     ) > .env
@@ -184,6 +195,11 @@ if "%ENCODER_MODE%"=="gateway" (
     echo DIRECT_API_PORT=3002
     echo DIRECT_API_KEY=%API_KEY%
     echo.
+    echo # 🔑 Persistent Encoder Identity ^(CRITICAL - keeps same identity across restarts^)
+    echo ENCODER_PRIVATE_KEY=%ENCODER_PRIVATE_KEY%
+    echo # ⚠️  This is NOT your Hive key - it's for encoder authentication only
+    echo # ✅ Keep this secret and backed up - losing it creates a "new encoder"
+    echo.
     echo # Logging
     echo LOG_LEVEL=info
     ) > .env
@@ -200,6 +216,11 @@ if "%ENCODER_MODE%"=="gateway" (
     echo DIRECT_API_ENABLED=true
     echo DIRECT_API_PORT=3002
     echo DIRECT_API_KEY=%API_KEY%
+    echo.
+    echo # 🔑 Persistent Encoder Identity ^(CRITICAL - keeps same identity across restarts^)
+    echo ENCODER_PRIVATE_KEY=%ENCODER_PRIVATE_KEY%
+    echo # ⚠️  This is NOT your Hive key - it's for encoder authentication only
+    echo # ✅ Keep this secret and backed up - losing it creates a "new encoder"
     echo.
     echo # Logging
     echo LOG_LEVEL=info

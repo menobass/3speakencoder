@@ -8,6 +8,7 @@
 import { config } from 'dotenv';
 import * as fs from 'fs';
 import * as readline from 'readline';
+import * as crypto from 'crypto';
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -61,6 +62,11 @@ async function setupEncoder() {
     }
   }
   
+  // Generate persistent encoder identity key
+  console.log('🔑 Generating persistent encoder identity key...');
+  const encoderPrivateKey = crypto.randomBytes(32).toString('base64');
+  console.log('✅ Encoder identity key generated successfully!');
+  
   // Create .env content
   const envContent = `# 3Speak Encoder Configuration
 # Generated on ${new Date().toISOString()}
@@ -74,8 +80,10 @@ NODE_NAME=${nodeName.trim() || defaultNodeName}
 # Gateway configuration
 GATEWAY_URL=${gatewayUrl}
 
-# Encoder authentication key (will be auto-generated on first run)
-# ENCODER_PRIVATE_KEY=auto-generated-on-startup
+# 🔑 Persistent Encoder Identity (CRITICAL - keeps same identity across restarts)
+ENCODER_PRIVATE_KEY=${encoderPrivateKey}
+# ⚠️  This is NOT your Hive key - it's for encoder authentication only
+# ✅ Keep this secret and backed up - losing it creates a "new encoder"
 
 # Advanced settings (optional)
 # QUEUE_MAX_LENGTH=1
@@ -94,14 +102,17 @@ GATEWAY_URL=${gatewayUrl}
   console.log(`   Gateway: ${gatewayUrl}\n`);
   
   console.log('🔑 Important Notes:');
-  console.log('   • Your encoder will auto-generate an authentication key on first run');
-  console.log('   • This is NOT your Hive private key - it\'s just for encoder-gateway communication');
-  console.log('   • Your Hive account remains secure - we only use your username for beneficiaries\n');
+  console.log('   • ✅ Your persistent encoder identity key has been generated automatically');
+  console.log('   • 🛡️  This ensures your encoder keeps the same identity across restarts');
+  console.log('   • 📊 Perfect for dashboard tracking and job attribution');
+  console.log('   • 🔐 This is NOT your Hive private key - it\'s just for encoder authentication');
+  console.log('   • 🔒 Your Hive account remains secure - we only use your username for beneficiaries\n');
   
   console.log('🚀 Next steps:');
   console.log('   1. Run: npm start');
-  console.log('   2. The encoder will auto-generate its authentication key');
+  console.log('   2. Your encoder will use its persistent identity automatically');
   console.log('   3. Start encoding videos for 3Speak!\n');
+  console.log('💡 Tip: Back up your .env file to preserve your encoder identity!');
   
   console.log('🎯 Your encoder is ready to use!');
   

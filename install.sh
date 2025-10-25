@@ -291,6 +291,11 @@ REMOTE_GATEWAY_ENABLED=true
 # Direct API disabled for gateway-only mode
 DIRECT_API_ENABLED=false
 
+# 🔑 Persistent Encoder Identity (CRITICAL - keeps same identity across restarts)
+ENCODER_PRIVATE_KEY=$ENCODER_PRIVATE_KEY
+# ⚠️  This is NOT your Hive key - it's for encoder authentication only
+# ✅ Keep this secret and backed up - losing it creates a "new encoder"
+
 # Logging
 LOG_LEVEL=info
 
@@ -312,6 +317,11 @@ DIRECT_API_ENABLED=true
 DIRECT_API_PORT=3002
 DIRECT_API_KEY=$API_KEY
 
+# 🔑 Persistent Encoder Identity (CRITICAL - keeps same identity across restarts)
+ENCODER_PRIVATE_KEY=$ENCODER_PRIVATE_KEY
+# ⚠️  This is NOT your Hive key - it's for encoder authentication only
+# ✅ Keep this secret and backed up - losing it creates a "new encoder"
+
 # Logging
 LOG_LEVEL=info
 
@@ -332,6 +342,11 @@ REMOTE_GATEWAY_ENABLED=true
 DIRECT_API_ENABLED=true
 DIRECT_API_PORT=3002
 DIRECT_API_KEY=$API_KEY
+
+# 🔑 Persistent Encoder Identity (CRITICAL - keeps same identity across restarts)
+ENCODER_PRIVATE_KEY=$ENCODER_PRIVATE_KEY
+# ⚠️  This is NOT your Hive key - it's for encoder authentication only
+# ✅ Keep this secret and backed up - losing it creates a "new encoder"
 
 # Logging
 LOG_LEVEL=info

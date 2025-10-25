@@ -163,6 +163,20 @@ Access at **http://localhost:3001** after starting the encoder.
 Create a `.env` file with your Hive username:
 ```bash
 HIVE_USERNAME=your-hive-username
+
+# ⚠️ CRITICAL: Add this for persistent encoder identity
+# Without this, your encoder gets a new identity on every restart!
+ENCODER_PRIVATE_KEY=auto-generated-see-logs-on-first-run
+```
+
+**🚨 IMPORTANT:** The `ENCODER_PRIVATE_KEY` is **required** for:
+- ✅ **Persistent identity** - Same encoder ID across restarts
+- ✅ **Dashboard tracking** - Proper job attribution in monitoring systems
+- ✅ **Gateway authentication** - Secure communication with 3Speak
+
+**🎯 Good news:** The **easy installers automatically generate this key** for you! If installing manually, generate one with:
+```bash
+node -e "console.log('ENCODER_PRIVATE_KEY=' + require('crypto').randomBytes(32).toString('base64'))"
 ```
 
 ### Advanced Configuration Options
@@ -207,6 +221,9 @@ Perfect for community members who want to help encode videos:
 HIVE_USERNAME=your-hive-username
 REMOTE_GATEWAY_ENABLED=true
 DIRECT_API_ENABLED=false
+
+# ⚠️ CRITICAL: Required for persistent identity
+ENCODER_PRIVATE_KEY=your-generated-key-from-first-run
 ```
 
 #### Example 2: Direct API Mode (Private Encoder)
@@ -230,6 +247,9 @@ DIRECT_API_ENABLED=true
 DIRECT_API_PORT=3002
 DIRECT_API_KEY=your-secure-generated-api-key
 MAX_CONCURRENT_JOBS=4
+
+# ⚠️ CRITICAL: Required for persistent identity
+ENCODER_PRIVATE_KEY=your-generated-key-from-first-run
 ```
 
 ## 🚀 Usage
@@ -364,7 +384,24 @@ wget https://raw.githubusercontent.com/menobass/3speakencoder/main/install.sh &&
 - Large files may take time to upload
 - TANK MODE provides maximum upload reliability
 
-#### 6. Smart Retry System
+#### 6. Missing ENCODER_PRIVATE_KEY
+**Problem:** Encoder identity changes on every restart, breaking dashboard tracking
+
+**Solution:**
+```bash
+# Generate a new persistent key
+node -e "console.log('ENCODER_PRIVATE_KEY=' + require('crypto').randomBytes(32).toString('base64'))"
+
+# Copy the output to your .env file
+echo "ENCODER_PRIVATE_KEY=YourGeneratedKeyHere" >> .env
+```
+
+**Signs you're missing this:**
+- Dashboard shows "new encoder" after every restart
+- Job attribution doesn't persist across sessions
+- Gateway authentication issues
+
+#### 7. Smart Retry System
 The encoder includes intelligent retry logic:
 - **5 retry attempts** with exponential backoff
 - **Result caching** - skips wasteful re-processing on retries
