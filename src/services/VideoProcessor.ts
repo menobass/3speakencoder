@@ -8,6 +8,7 @@ import { join, dirname } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 import { IPFSService } from './IPFSService';
+import { DashboardService } from './DashboardService';
 import { cleanErrorForLogging } from '../common/errorUtils.js';
 
 export class VideoProcessor {
@@ -15,11 +16,18 @@ export class VideoProcessor {
   private availableCodecs: CodecCapability[] = [];
   private tempDir: string;
   private ipfsService: IPFSService;
+  private dashboard: DashboardService | undefined;
+  private currentJobId?: string;
 
-  constructor(config: EncoderConfig, ipfsService: IPFSService) {
+  constructor(config: EncoderConfig, ipfsService: IPFSService, dashboard?: DashboardService) {
     this.config = config;
     this.ipfsService = ipfsService;
+    this.dashboard = dashboard;
     this.tempDir = config.encoder?.temp_dir || join(tmpdir(), '3speak-encoder');
+  }
+  
+  setCurrentJob(jobId: string): void {
+    this.currentJobId = jobId;
   }
 
   async initialize(): Promise<void> {
@@ -343,9 +351,29 @@ export class VideoProcessor {
           const mbDownloaded = (downloadedBytes / 1024 / 1024).toFixed(1);
           const mbTotal = (totalBytes / 1024 / 1024).toFixed(1);
           logger.info(`📥 Download progress: ${percent}% (${mbDownloaded}MB / ${mbTotal}MB) from ${source}`);
+          
+          // 📊 Update dashboard with download progress (5-25% range for download phase)
+          if (this.dashboard && this.currentJobId) {
+            const dashboardProgress = 5 + Math.round(percent * 0.2); // Scale to 5-25% of total job
+            this.dashboard.updateJobProgress(this.currentJobId, dashboardProgress, `downloading-${source.includes('gateway') ? 'gateway' : source.includes('IPFS') ? 'ipfs' : 'http'}`, {
+              downloadPercent: percent,
+              downloadedMB: mbDownloaded,
+              totalMB: mbTotal,
+              source: source
+            });
+          }
         } else {
           const mbDownloaded = (downloadedBytes / 1024 / 1024).toFixed(1);
           logger.info(`📥 Downloaded: ${mbDownloaded}MB from ${source} (size unknown)`);
+          
+          // 📊 Update dashboard with unknown size progress
+          if (this.dashboard && this.currentJobId) {
+            const estimatedProgress = Math.min(25, 5 + Math.floor(downloadedBytes / (50 * 1024 * 1024))); // Rough estimate
+            this.dashboard.updateJobProgress(this.currentJobId, estimatedProgress, `downloading-${source.includes('gateway') ? 'gateway' : source.includes('IPFS') ? 'ipfs' : 'http'}`, {
+              downloadedMB: mbDownloaded,
+              source: source
+            });
+          }
         }
         lastProgressTime = now;
       }
@@ -365,6 +393,15 @@ export class VideoProcessor {
       writer.on('finish', () => {
         const finalMB = (downloadedBytes / 1024 / 1024).toFixed(1);
         logger.info(`✅ Successfully downloaded ${finalMB}MB from ${source}`);
+        
+        // 📊 Update dashboard - download complete (25% of total job)
+        if (this.dashboard && this.currentJobId) {
+          this.dashboard.updateJobProgress(this.currentJobId, 25, 'download-complete', {
+            downloadedMB: finalMB,
+            source: source
+          });
+        }
+        
         cleanup();
         resolve();
       });

@@ -38,7 +38,7 @@ export class ThreeSpeakEncoder {
     }
     this.identity = new IdentityService(config);
     this.ipfs = new IPFSService(config);
-    this.processor = new VideoProcessor(config, this.ipfs);
+    this.processor = new VideoProcessor(config, this.ipfs, dashboard);
     this.gateway = new GatewayClient(config);
     this.jobQueue = new JobQueue(
       config.encoder?.max_concurrent_jobs || 1,
@@ -571,6 +571,9 @@ export class ThreeSpeakEncoder {
           this.dashboard.updateJobProgress(job.id, 95, 'notifying-gateway');
         }
       } else {
+        // Set current job ID for dashboard progress tracking
+        this.processor.setCurrentJob(job.id);
+        
         // Process the video using the unified processor
         result = await this.processor.processVideo(job, (progress: EncodingProgress) => {
           // Update progress in dashboard
@@ -802,6 +805,9 @@ export class ThreeSpeakEncoder {
       // Update status to running
       job.status = JobStatus.RUNNING;
       await this.gateway.pingJob(jobId, { status: JobStatus.RUNNING });
+
+      // Set current job ID for dashboard progress tracking
+      this.processor.setCurrentJob(jobId);
 
       // Process the video
       const result = await this.processor.processVideo(job, (progress: EncodingProgress) => {

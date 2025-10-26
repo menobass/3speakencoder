@@ -384,27 +384,61 @@ export class IPFSService {
         throw new Error('IPFS returned non-text response data');
       }
       
+      // 🔍 DEBUG: Log the raw response for troubleshooting
+      logger.info(`🗂️ Raw 3Speak IPFS response (first 500 chars): ${response.data.substring(0, 500)}`);
+      
       const lines = response.data.trim().split('\n');
       let directoryHash = '';
       
+      logger.info(`📊 Response contains ${lines.length} lines`);
+      
       // Find the directory hash (usually the last entry)
-      for (const line of lines) {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line) continue; // Skip undefined lines
+        
         try {
           if (!line.trim()) continue; // Skip empty lines
           
           const result = JSON.parse(line);
+          logger.info(`🔍 Line ${i + 1}: Name="${result.Name || ''}", Hash="${result.Hash || ''}", Size=${result.Size || 0}`);
           
           if (result.Name === '' || result.Name === dirPath || !result.Name) {
             directoryHash = result.Hash;
+            logger.info(`🎯 Found directory hash: ${directoryHash} (matched on Name="${result.Name || 'empty'}")`);
           }
         } catch (parseError) {
-          logger.warn(`⚠️ Could not parse IPFS response line: ${line.substring(0, 100)}...`);
+          logger.warn(`⚠️ Could not parse IPFS response line ${i + 1}: ${line.substring(0, 100)}...`);
           // Continue processing other lines
         }
       }
       
+      // 🆘 FALLBACK: If no directory hash found, try the last hash in the response
+      if (!directoryHash && lines.length > 0) {
+        logger.warn(`⚠️ No directory hash found using standard criteria, trying fallback...`);
+        
+        // Try the last line (often the directory wrapper)
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const line = lines[i];
+          if (!line) continue;
+          
+          try {
+            const result = JSON.parse(line);
+            if (result.Hash) {
+              directoryHash = result.Hash;
+              logger.info(`🆘 Fallback: Using last hash as directory hash: ${directoryHash}`);
+              break;
+            }
+          } catch (e) {
+            // Continue to previous line
+          }
+        }
+      }
+      
       if (!directoryHash) {
-        throw new Error('Could not find directory hash in response');
+        logger.error(`🚨 CRITICAL: Could not extract directory hash from response`);
+        logger.error(`🗂️ Full response data: ${response.data}`);
+        throw new Error(`Could not find directory hash in response. Response had ${lines.length} lines.`);
       }
       
       logger.info(`✅ Directory uploaded successfully: ${directoryHash}`);
