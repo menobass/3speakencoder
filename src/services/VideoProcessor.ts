@@ -261,8 +261,11 @@ export class VideoProcessor {
         throw new Error(`Both 3Speak gateway and local IPFS failed. Gateway: ${error.message}`);
       }
       
+    } else if (uri.startsWith('file://')) {
+      // Handle local file:// URLs by copying the file directly
+      await this.copyLocalFile(uri, outputPath);
     } else {
-      // For non-IPFS URLs, use direct HTTP download
+      // For regular HTTP/HTTPS URLs, use HTTP download
       await this.downloadFromHTTP(uri, outputPath);
     }
   }
@@ -326,6 +329,56 @@ export class VideoProcessor {
     });
     
     await this.streamToFileWithProgress(response.data, outputPath, `HTTP ${uri}`, response.headers['content-length']);
+  }
+  
+  /**
+   * Copy local file:// URL to output path
+   */
+  private async copyLocalFile(fileUri: string, outputPath: string): Promise<void> {
+    const fs = await import('fs').then(m => m.promises);
+    const path = await import('path');
+    
+    // Convert file:// URL to local path
+    const localPath = fileUri.replace('file://', '');
+    
+    logger.info(`📁 Copying local file: ${localPath} -> ${outputPath}`);
+    
+    try {
+      // Check if source file exists
+      const stats = await fs.stat(localPath);
+      const fileSizeMB = (stats.size / 1024 / 1024).toFixed(1);
+      
+      logger.info(`📊 Local file size: ${fileSizeMB}MB`);
+      
+      // Update dashboard - starting local file copy
+      if (this.dashboard && this.currentJobId) {
+        this.dashboard.updateJobProgress(this.currentJobId, 10, 'copying-local-file', {
+          fileSizeMB: fileSizeMB,
+          source: 'local file'
+        });
+      }
+      
+      // Ensure output directory exists
+      const outputDir = path.dirname(outputPath);
+      await fs.mkdir(outputDir, { recursive: true });
+      
+      // Copy the file
+      await fs.copyFile(localPath, outputPath);
+      
+      logger.info(`✅ Successfully copied local file: ${fileSizeMB}MB`);
+      
+      // Update dashboard - local file copy complete
+      if (this.dashboard && this.currentJobId) {
+        this.dashboard.updateJobProgress(this.currentJobId, 25, 'local-file-copied', {
+          fileSizeMB: fileSizeMB,
+          source: 'local file'
+        });
+      }
+      
+    } catch (error: any) {
+      logger.error(`❌ Failed to copy local file: ${error.message}`);
+      throw new Error(`Failed to copy local file from ${localPath}: ${error.message}`);
+    }
   }
   
   /**
