@@ -225,122 +225,136 @@ export class VideoProcessor {
   private async downloadVideo(uri: string, outputPath: string): Promise<void> {
     logger.info(`📥 Downloading video from: ${uri}`);
     
-    // Multiple IPFS gateways as fallbacks (more gateways for better resilience)
-    const ipfsGateways = [
-      'https://ipfs.3speak.tv',
-      'https://gateway.pinata.cloud',
-      'https://cloudflare-ipfs.com',
-      'https://ipfs.io',
-      'https://dweb.link',
-      'https://gateway.ipfs.io',
-      'https://hardbin.com',
-      'https://infura-ipfs.io',
-      'https://w3s.link',
-      'https://nftstorage.link'
-    ];
-    
-    const axios = await import('axios');
-    let lastError: Error | null = null;
-    
     // Extract IPFS hash if it's an IPFS URL
     const ipfsMatch = uri.match(/\/ipfs\/([a-zA-Z0-9]+)/);
     const ipfsHash = ipfsMatch ? ipfsMatch[1] : null;
     
-    // If it's an IPFS URL, try multiple gateways
     if (ipfsHash) {
-      for (const gateway of ipfsGateways) {
-        const gatewayUrl = `${gateway}/ipfs/${ipfsHash}`;
-        logger.info(`🔄 Trying IPFS gateway: ${gateway}`);
-        
-        try {
-          const response = await axios.default.get(gatewayUrl, {
-            responseType: 'stream',
-            timeout: 120000, // 2 minute timeout for large video files
-            maxRedirects: 5,
-            headers: {
-              'User-Agent': '3SpeakEncoder/1.0'
-            }
-          });
-          
-          const writer = createWriteStream(outputPath);
-          response.data.pipe(writer);
-          
-          await new Promise<void>((resolve, reject) => {
-            // 🚨 MEMORY SAFE: Ensure streams are destroyed on completion/error
-            const cleanup = () => {
-              try {
-                if (!response.data.destroyed) response.data.destroy();
-                if (!writer.destroyed) writer.destroy();
-              } catch (e) {
-                // Ignore cleanup errors
-              }
-            };
-            
-            writer.on('finish', () => {
-              logger.info(`✅ Successfully downloaded video from ${gateway}`);
-              cleanup();
-              resolve();
-            });
-            
-            writer.on('error', (err: any) => {
-              cleanup();
-              reject(err);
-            });
-            
-            response.data.on('error', (err: any) => {
-              cleanup();
-              reject(err);
-            });
-            
-            // 🚨 CRITICAL: Handle aborted streams explicitly
-            response.data.on('aborted', () => {
-              cleanup();
-              reject(new Error('Download stream was aborted'));
-            });
-          });
-          
-          return; // Success, exit the function
-          
-        } catch (error: any) {
-          lastError = error as Error;
-          // Clean error logging - avoid dumping internal Node.js buffers
-          logger.warn(`⚠️ Failed to download from ${gateway}: ${error.message}`, cleanErrorForLogging(error));
-          // Try next gateway
-          continue;
-        }
+      // 🎯 SMART TWO-TIER FALLBACK for IPFS content
+      
+      // Tier 1: Try 3Speak gateway first (direct access to their infrastructure)
+      try {
+        logger.info('🎯 Trying 3Speak IPFS gateway (direct access)');
+        await this.downloadFromGateway('https://ipfs.3speak.tv', ipfsHash, outputPath);
+        logger.info('✅ Successfully downloaded via 3Speak gateway');
+        return;
+      } catch (error: any) {
+        logger.warn(`⚠️ 3Speak gateway failed: ${error.message}`, cleanErrorForLogging(error));
+        logger.info('🔍 Falling back to local IPFS daemon (P2P network)');
       }
       
-      // If all IPFS gateways failed, throw the last error
-      throw new Error(`Failed to download from all IPFS gateways. Last error: ${lastError?.message}`);
+      // Tier 2: Fallback to local IPFS daemon (P2P network discovery)
+      try {
+        await this.downloadFromLocalIPFS(ipfsHash, outputPath);
+        logger.info('✅ Successfully downloaded via local IPFS daemon');
+        return;
+      } catch (error: any) {
+        logger.error(`❌ Local IPFS daemon failed: ${error.message}`, cleanErrorForLogging(error));
+        throw new Error(`Both 3Speak gateway and local IPFS failed. Gateway: ${error.message}`);
+      }
       
     } else {
-      // For non-IPFS URLs, use direct download with timeout
-      try {
-        const response = await axios.default.get(uri, {
-          responseType: 'stream',
-          timeout: 120000, // 2 minute timeout for large video files
-          maxRedirects: 5,
-          headers: {
-            'User-Agent': '3SpeakEncoder/1.0'
-          }
-        });
-        
-        const writer = createWriteStream(outputPath);
-        response.data.pipe(writer);
-        
-        await new Promise<void>((resolve, reject) => {
-          writer.on('finish', () => {
-            logger.info(`✅ Successfully downloaded video from ${uri}`);
-            resolve();
-          });
-          writer.on('error', reject);
-          response.data.on('error', reject);
-        });
-        
-      } catch (error) {
-        throw new Error(`Failed to download video from ${uri}: ${(error as Error).message}`);
-      }
+      // For non-IPFS URLs, use direct HTTP download
+      await this.downloadFromHTTP(uri, outputPath);
     }
+  }
+  
+  /**
+   * Download from 3Speak IPFS gateway (Tier 1 - Direct Access)
+   */
+  private async downloadFromGateway(gateway: string, ipfsHash: string, outputPath: string): Promise<void> {
+    const axios = await import('axios');
+    const gatewayUrl = `${gateway}/ipfs/${ipfsHash}`;
+    
+    const response = await axios.default.get(gatewayUrl, {
+      responseType: 'stream',
+      timeout: 90000, // 1.5 minutes - gateway should be fast
+      maxRedirects: 5,
+      headers: {
+        'User-Agent': '3SpeakEncoder/1.0'
+      }
+    });
+    
+    await this.streamToFile(response.data, outputPath, `gateway ${gateway}`);
+  }
+  
+  /**
+   * Download from local IPFS daemon (Tier 2 - P2P Network)
+   */
+  private async downloadFromLocalIPFS(ipfsHash: string, outputPath: string): Promise<void> {
+    const axios = await import('axios');
+    
+    const response = await axios.default.post(
+      `http://127.0.0.1:5001/api/v0/cat?arg=${ipfsHash}`,
+      null,
+      {
+        responseType: 'stream',
+        timeout: 300000, // 5 minutes - P2P discovery can take time
+        maxRedirects: 0
+      }
+    );
+    
+    await this.streamToFile(response.data, outputPath, 'local IPFS daemon');
+  }
+  
+  /**
+   * Download from regular HTTP URL
+   */
+  private async downloadFromHTTP(uri: string, outputPath: string): Promise<void> {
+    const axios = await import('axios');
+    
+    const response = await axios.default.get(uri, {
+      responseType: 'stream',
+      timeout: 120000, // 2 minutes for regular HTTP
+      maxRedirects: 5,
+      headers: {
+        'User-Agent': '3SpeakEncoder/1.0'
+      }
+    });
+    
+    await this.streamToFile(response.data, outputPath, `HTTP ${uri}`);
+  }
+  
+  /**
+   * 🚨 MEMORY SAFE: Stream data to file with proper cleanup
+   */
+  private async streamToFile(dataStream: any, outputPath: string, source: string): Promise<void> {
+    const writer = createWriteStream(outputPath);
+    dataStream.pipe(writer);
+    
+    return new Promise<void>((resolve, reject) => {
+      // 🚨 MEMORY SAFE: Ensure streams are destroyed on completion/error
+      const cleanup = () => {
+        try {
+          if (!dataStream.destroyed) dataStream.destroy();
+          if (!writer.destroyed) writer.destroy();
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+      };
+      
+      writer.on('finish', () => {
+        logger.info(`✅ Successfully downloaded from ${source}`);
+        cleanup();
+        resolve();
+      });
+      
+      writer.on('error', (err: any) => {
+        cleanup();
+        reject(err);
+      });
+      
+      dataStream.on('error', (err: any) => {
+        cleanup();
+        reject(err);
+      });
+      
+      // 🚨 CRITICAL: Handle aborted streams explicitly
+      dataStream.on('aborted', () => {
+        cleanup();
+        reject(new Error('Download stream was aborted'));
+      });
+    });
   }
 
   private async encodeProfile(

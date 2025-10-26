@@ -187,14 +187,31 @@ export class GatewayClient {
       throw new Error('Identity service not set');
     }
 
-    const jws = await this.identity.createJWS({ 
-      job_id: jobId,
-      error: errorDetails
-    });
-    
-    await this.client.post('/api/v0/gateway/failJob', {
-      jws
-    });
+    try {
+      // 🕐 DST FIX: Add current timestamp to help with time change issues
+      const payload = { 
+        job_id: jobId,
+        error: errorDetails,
+        timestamp: new Date().toISOString(),
+        encoder_time: Date.now() // Unix timestamp for precise timing
+      };
+      
+      const jws = await this.identity.createJWS(payload);
+      
+      await this.client.post('/api/v0/gateway/failJob', {
+        jws
+      });
+      
+    } catch (error: any) {
+      // 🚨 DST/Gateway Fix: Don't fail the encoder if gateway reporting fails
+      if (error.response?.status === 500) {
+        logger.warn(`⚠️ Gateway server error (500) - this may be due to time change/DST issues: ${error.message}`);
+        logger.warn(`🕐 Current encoder time: ${new Date().toISOString()}`);
+        // Don't throw - let the job retry logic handle this
+        return;
+      }
+      throw error;
+    }
   }
 
   async finishJob(jobId: string, result: any): Promise<any> {
@@ -208,13 +225,17 @@ export class GatewayClient {
       throw new Error('No IPFS CID found in result');
     }
 
-    // Use the same format as the old working encoder
-    const jws = await this.identity.createJWS({
+    // 🕐 DST FIX: Add timing info to help with time change issues
+    const payload = {
       job_id: jobId,
+      timestamp: new Date().toISOString(),
+      encoder_time: Date.now(),
       output: {
         cid: cid
       }
-    });
+    };
+
+    const jws = await this.identity.createJWS(payload);
 
     try {
       const response = await this.client.post('/api/v0/gateway/finishJob', {

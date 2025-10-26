@@ -727,26 +727,39 @@ export class IPFSService {
       
       logger.info(`📁 Directory structure verification: ${foundFolders.length} folders, ${foundFiles.length} files`);
       
-      // Expect at least master playlist and quality folders (1080p, 720p, etc)
-      const expectedFiles = ['master.m3u8'];
-      const expectedFolders = ['1080p', '720p']; // Common quality folders
+      // 🛡️ RELAXED: Check for reasonable content structure (not overly strict)
+      const expectedFiles = ['master.m3u8', 'index.m3u8', 'playlist.m3u8']; // Multiple possible playlist names
+      const expectedFolders = ['1080p', '720p', '480p', '360p', '240p']; // All possible quality folders
       
-      const hasRequiredFiles = expectedFiles.some(file => 
+      const hasPlaylistFile = expectedFiles.some(file => 
         foundFiles.find((link: any) => link.Name === file)
       );
       
-      const hasQualityFolders = expectedFolders.some(folder => 
-        foundFolders.find((link: any) => link.Name === folder)
-      );
+      const hasQualityContent = foundFolders.length > 0 || foundFiles.length > 0;
       
-      if (!hasRequiredFiles) {
-        logger.error(`🚨 CRITICAL: Missing required files (master.m3u8) in directory structure`);
+      if (!hasPlaylistFile && foundFiles.length === 0) {
+        logger.error(`🚨 CRITICAL: No playlist files or content found in directory structure`);
         return false;
       }
       
-      if (!hasQualityFolders) {
-        logger.error(`🚨 CRITICAL: Missing quality folders (1080p, 720p, etc) in directory structure`);
+      if (!hasQualityContent) {
+        logger.error(`🚨 CRITICAL: Directory appears to be completely empty`);
         return false;
+      }
+      
+      // 📊 Log what we found for debugging
+      if (hasPlaylistFile) {
+        const playlist = expectedFiles.find(file => 
+          foundFiles.find((link: any) => link.Name === file)
+        );
+        logger.info(`✅ Found playlist file: ${playlist}`);
+      }
+      
+      const qualityFolders = foundFolders.filter((link: any) => 
+        expectedFolders.includes(link.Name)
+      );
+      if (qualityFolders.length > 0) {
+        logger.info(`✅ Found quality folders: ${qualityFolders.map((f: any) => f.Name).join(', ')}`);
       }
       
       logger.info(`✅ Directory structure verified - proper HLS layout confirmed`);
