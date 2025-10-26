@@ -700,23 +700,60 @@ export class IPFSService {
       return false;
     }
     
-    // Try to fetch the content to ensure it's actually retrievable
+    // 🛡️ ENHANCED: Verify directory structure integrity
     try {
       const axios = await import('axios');
-      logger.info(`🔍 Verifying content is retrievable: ${hash}`);
+      logger.info(`🔍 Verifying directory structure integrity: ${hash}`);
       
-      // Just check if we can get the stat (don't download the whole thing)
-      await axios.default.post(
-        `${threeSpeakIPFS}/api/v0/object/stat?arg=${hash}`,
+      // Check directory listing to ensure structure is intact
+      const listResponse = await axios.default.post(
+        `${threeSpeakIPFS}/api/v0/ls?arg=${hash}`,
         null,
         { timeout: 30000 }
       );
       
-      logger.info(`✅ Content ${hash} is retrievable`);
+      const listing = typeof listResponse.data === 'string' 
+        ? JSON.parse(listResponse.data) 
+        : listResponse.data;
+      
+      if (!listing.Objects || !listing.Objects[0] || !listing.Objects[0].Links) {
+        logger.error(`🚨 CRITICAL: Directory structure is corrupted - no folder structure found in ${hash}`);
+        return false;
+      }
+      
+      const links = listing.Objects[0].Links;
+      const foundFolders = links.filter((link: any) => link.Type === 1); // Type 1 = directory
+      const foundFiles = links.filter((link: any) => link.Type === 2);   // Type 2 = file
+      
+      logger.info(`📁 Directory structure verification: ${foundFolders.length} folders, ${foundFiles.length} files`);
+      
+      // Expect at least master playlist and quality folders (1080p, 720p, etc)
+      const expectedFiles = ['master.m3u8'];
+      const expectedFolders = ['1080p', '720p']; // Common quality folders
+      
+      const hasRequiredFiles = expectedFiles.some(file => 
+        foundFiles.find((link: any) => link.Name === file)
+      );
+      
+      const hasQualityFolders = expectedFolders.some(folder => 
+        foundFolders.find((link: any) => link.Name === folder)
+      );
+      
+      if (!hasRequiredFiles) {
+        logger.error(`🚨 CRITICAL: Missing required files (master.m3u8) in directory structure`);
+        return false;
+      }
+      
+      if (!hasQualityFolders) {
+        logger.error(`🚨 CRITICAL: Missing quality folders (1080p, 720p, etc) in directory structure`);
+        return false;
+      }
+      
+      logger.info(`✅ Directory structure verified - proper HLS layout confirmed`);
       return true;
       
     } catch (error: any) {
-      logger.error(`🚨 Content ${hash} exists but is not retrievable:`, error.message);
+      logger.error(`🚨 Directory structure verification failed for ${hash}:`, error.message);
       return false;
     }
   }
