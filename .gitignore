@@ -134,6 +134,9 @@ docs/internal/
 design-*.md
 super-encoder-*.md
 
+# Administrative scripts and infrastructure tools
+admin-scripts/
+
 # Backup files
 *.bak
 *.backup
