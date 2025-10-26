@@ -266,6 +266,8 @@ export class VideoProcessor {
     const axios = await import('axios');
     const gatewayUrl = `${gateway}/ipfs/${ipfsHash}`;
     
+    logger.info(`⏱️ Gateway timeout: 90 seconds (should be fast for direct access)`);
+    
     const response = await axios.default.get(gatewayUrl, {
       responseType: 'stream',
       timeout: 90000, // 1.5 minutes - gateway should be fast
@@ -275,7 +277,7 @@ export class VideoProcessor {
       }
     });
     
-    await this.streamToFile(response.data, outputPath, `gateway ${gateway}`);
+    await this.streamToFileWithProgress(response.data, outputPath, `gateway ${gateway}`, response.headers['content-length']);
   }
   
   /**
@@ -283,6 +285,9 @@ export class VideoProcessor {
    */
   private async downloadFromLocalIPFS(ipfsHash: string, outputPath: string): Promise<void> {
     const axios = await import('axios');
+    
+    logger.info(`⏱️ Local IPFS timeout: 5 minutes (P2P discovery can take time)`);
+    logger.info(`🔍 Starting P2P discovery and download for ${ipfsHash}...`);
     
     const response = await axios.default.post(
       `http://127.0.0.1:5001/api/v0/cat?arg=${ipfsHash}`,
@@ -294,7 +299,7 @@ export class VideoProcessor {
       }
     );
     
-    await this.streamToFile(response.data, outputPath, 'local IPFS daemon');
+    await this.streamToFileWithProgress(response.data, outputPath, 'local IPFS daemon (P2P)');
   }
   
   /**
@@ -312,15 +317,39 @@ export class VideoProcessor {
       }
     });
     
-    await this.streamToFile(response.data, outputPath, `HTTP ${uri}`);
+    await this.streamToFileWithProgress(response.data, outputPath, `HTTP ${uri}`, response.headers['content-length']);
   }
   
   /**
-   * 🚨 MEMORY SAFE: Stream data to file with proper cleanup
+   * 🚨 MEMORY SAFE: Stream data to file with progress tracking
    */
-  private async streamToFile(dataStream: any, outputPath: string, source: string): Promise<void> {
+  private async streamToFileWithProgress(dataStream: any, outputPath: string, source: string, contentLength?: string): Promise<void> {
     const writer = createWriteStream(outputPath);
     dataStream.pipe(writer);
+    
+    let downloadedBytes = 0;
+    const totalBytes = contentLength ? parseInt(contentLength) : null;
+    let lastProgressTime = Date.now();
+    
+    // Progress tracking
+    dataStream.on('data', (chunk: Buffer) => {
+      downloadedBytes += chunk.length;
+      const now = Date.now();
+      
+      // Log progress every 10 seconds or every 25MB
+      if (now - lastProgressTime > 10000 || downloadedBytes % (25 * 1024 * 1024) < chunk.length) {
+        if (totalBytes) {
+          const percent = Math.round((downloadedBytes / totalBytes) * 100);
+          const mbDownloaded = (downloadedBytes / 1024 / 1024).toFixed(1);
+          const mbTotal = (totalBytes / 1024 / 1024).toFixed(1);
+          logger.info(`📥 Download progress: ${percent}% (${mbDownloaded}MB / ${mbTotal}MB) from ${source}`);
+        } else {
+          const mbDownloaded = (downloadedBytes / 1024 / 1024).toFixed(1);
+          logger.info(`📥 Downloaded: ${mbDownloaded}MB from ${source} (size unknown)`);
+        }
+        lastProgressTime = now;
+      }
+    });
     
     return new Promise<void>((resolve, reject) => {
       // 🚨 MEMORY SAFE: Ensure streams are destroyed on completion/error
@@ -334,7 +363,8 @@ export class VideoProcessor {
       };
       
       writer.on('finish', () => {
-        logger.info(`✅ Successfully downloaded from ${source}`);
+        const finalMB = (downloadedBytes / 1024 / 1024).toFixed(1);
+        logger.info(`✅ Successfully downloaded ${finalMB}MB from ${source}`);
         cleanup();
         resolve();
       });
