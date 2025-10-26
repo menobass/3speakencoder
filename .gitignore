@@ -129,6 +129,11 @@ test-direct-api-mode.js
 local.json
 dev.json
 
+# Internal design documents
+docs/internal/
+design-*.md
+super-encoder-*.md
+
 # Backup files
 *.bak
 *.backup
