@@ -88,9 +88,40 @@ export class IPFSService {
         logger.debug('Could not fetch repo stats (non-critical)');
       }
       
+      // Check cluster health if cluster pinning is enabled
+      if (this.config.ipfs?.use_cluster_for_pins) {
+        await this.checkClusterHealth();
+      }
+      
     } catch (error: any) {
       logger.warn(`⚠️ 3Speak IPFS health check failed:`, error.message);
       logger.warn(`⚠️ Uploads may fail or be slow - consider checking IPFS node status`);
+      // Don't throw - we'll try to proceed anyway
+    }
+  }
+
+  /**
+   * 🛡️ TANK MODE: Check IPFS Cluster health when cluster pinning is enabled
+   */
+  private async checkClusterHealth(): Promise<void> {
+    const clusterEndpoint = this.config.ipfs?.cluster_endpoint || 'http://65.21.201.94:9094';
+    const axios = await import('axios');
+    
+    try {
+      logger.info(`🏥 Checking IPFS Cluster health...`);
+      
+      // Check cluster is responding
+      const idResponse = await axios.default.get(`${clusterEndpoint}/id`, {
+        timeout: 10000
+      });
+      
+      const clusterInfo = idResponse.data;
+      logger.info(`✅ IPFS Cluster is healthy (${clusterInfo.peername || 'unknown'})`);
+      logger.info(`📊 Cluster version: ${clusterInfo.version}, peers: ${clusterInfo.cluster_peers?.length || 0}`);
+      
+    } catch (error: any) {
+      logger.warn(`⚠️ IPFS Cluster health check failed:`, error.message);
+      logger.warn(`⚠️ Cluster pinning may fail - consider checking cluster status`);
       // Don't throw - we'll try to proceed anyway
     }
   }
@@ -518,13 +549,22 @@ export class IPFSService {
     const axios = await import('axios');
     const maxRetries = 5; // More retries for pin operations
     const baseDelay = 2000; // Start with 2 second delay
+    const localFallbackEnabled = this.config.ipfs?.enable_local_fallback || false;
+    const fallbackThreshold = this.config.ipfs?.local_fallback_threshold || 3;
     
     logger.info(`🛡️ TANK MODE: Initiating bulletproof pin for ${hash}`);
+    
+    if (localFallbackEnabled) {
+      logger.info(`🏠 Local fallback enabled (threshold: ${fallbackThreshold} attempts)`);
+    }
 
     // Step 1: Pin with retry logic
+    let remotePinSucceeded = false;
+    let lastRemoteError: any = null;
+    
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        logger.info(`📌 Pinning attempt ${attempt}/${maxRetries}: ${hash}`);
+        logger.info(`📌 Remote pin attempt ${attempt}/${maxRetries}: ${hash}`);
         
         // Pin with recursive flag and more aggressive timeout
         const pinTimeout = 60000; // 1 minute timeout (reduced from 2 minutes)
@@ -540,50 +580,110 @@ export class IPFSService {
           }
         );
         
-        logger.info(`✅ Pin command succeeded for ${hash}`);
+        logger.info(`✅ Remote pin command succeeded for ${hash}`);
+        remotePinSucceeded = true;
         break; // Success, exit retry loop
         
       } catch (error: any) {
+        lastRemoteError = error;
         const isLastAttempt = attempt === maxRetries;
+        const shouldTryFallback = localFallbackEnabled && attempt >= fallbackThreshold;
         
-        if (isLastAttempt) {
-          logger.error(`❌ Pin failed after ${maxRetries} attempts for ${hash}:`, error.message);
-          throw new Error(`CRITICAL: Pin failed after ${maxRetries} attempts - ${error.message}`);
+        if (shouldTryFallback && !isLastAttempt) {
+          logger.warn(`⚠️ Remote pin attempt ${attempt} failed, will try local fallback:`, error.message);
+          // Don't break yet, let it try one more remote attempt first
+        } else if (isLastAttempt) {
+          logger.error(`❌ Remote pin failed after ${maxRetries} attempts for ${hash}:`, error.message);
+          
+          if (localFallbackEnabled) {
+            logger.info(`🏠 Attempting local fallback pin for ${hash}`);
+            break; // Exit retry loop to try local fallback
+          } else {
+            throw new Error(`CRITICAL: Pin failed after ${maxRetries} attempts - ${error.message}`);
+          }
+        } else {
+          const delay = Math.min(baseDelay * Math.pow(2, attempt - 1), 30000); // Max 30s
+          logger.warn(`⚠️ Pin attempt ${attempt} failed, retrying in ${delay}ms:`, error.message);
+          await new Promise(resolve => setTimeout(resolve, delay));
         }
-        
-        const delay = Math.min(baseDelay * Math.pow(2, attempt - 1), 30000); // Max 30s
-        logger.warn(`⚠️ Pin attempt ${attempt} failed, retrying in ${delay}ms:`, error.message);
-        await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
 
-    // Step 2: VERIFY the pin actually worked
-    logger.info(`🔍 Verifying pin status for ${hash}`);
-    const pinVerified = await this.verifyPinStatus(hash, threeSpeakIPFS);
+    // Step 1.5: Try local fallback if remote failed and fallback is enabled
+    let localPinSucceeded = false;
+    if (!remotePinSucceeded && localFallbackEnabled) {
+      try {
+        logger.info(`🏠 Remote pin failed, attempting local fallback for ${hash}`);
+        await this.client.pin.add(hash);
+        localPinSucceeded = true;
+        logger.info(`✅ Local fallback pin succeeded for ${hash}`);
+        
+        // Log this for future sync service processing
+        await this.logLocalPin(hash);
+        
+      } catch (localError: any) {
+        logger.error(`❌ Local fallback pin also failed for ${hash}:`, localError.message);
+        throw new Error(`CRITICAL: Both remote and local pin failed for ${hash} - Remote: ${lastRemoteError?.message}, Local: ${localError.message}`);
+      }
+    }
+
+    // Ensure at least one pin method succeeded
+    if (!remotePinSucceeded && !localPinSucceeded) {
+      throw new Error(`CRITICAL: No pin method succeeded for ${hash}`);
+    }
+
+    // Step 2: VERIFY the pin status
+    const pinLocation = remotePinSucceeded ? 'remote' : 'local';
+    logger.info(`🔍 Verifying ${pinLocation} pin status for ${hash}`);
     
-    if (!pinVerified) {
-      throw new Error(`CRITICAL: Pin verification failed for ${hash} - content may not be persisted!`);
+    let pinVerified = false;
+    if (remotePinSucceeded) {
+      pinVerified = await this.verifyPinStatus(hash, threeSpeakIPFS);
+    } else if (localPinSucceeded) {
+      pinVerified = await this.verifyLocalPinStatus(hash);
     }
     
-    logger.info(`✅ Pin verified successfully: ${hash}`);
+    if (!pinVerified) {
+      throw new Error(`CRITICAL: ${pinLocation} pin verification failed for ${hash} - content may not be persisted!`);
+    }
+    
+    logger.info(`✅ ${pinLocation} pin verified successfully: ${hash}`);
 
     // Step 3: Announce to DHT (best effort, don't fail if this fails)
-    try {
-      logger.info(`📢 Starting DHT announcement for ${hash}...`);
-      const dhtTimeout = 30000; // Reduced to 30 seconds
-      
-      await axios.default.post(
-        `${threeSpeakIPFS}/api/v0/dht/provide?arg=${hash}`,
-        null,
-        { 
-          timeout: dhtTimeout,
-          maxContentLength: 1024 * 1024, // 1MB response limit
-        }
-      );
-      logger.info(`✅ DHT announcement completed for ${hash}`);
-    } catch (error: any) {
-      // DHT announce is nice-to-have, not critical
-      logger.warn(`⚠️ DHT announcement failed (non-critical) for ${hash}: ${error.message}`);
+    if (remotePinSucceeded) {
+      // For remote pins, announce via the supernode  
+      try {
+        logger.info(`📢 Starting remote DHT announcement for ${hash}...`);
+        const dhtTimeout = 30000; // Reduced to 30 seconds
+        
+        await axios.default.post(
+          `${threeSpeakIPFS}/api/v0/dht/provide?arg=${hash}`,
+          null,
+          { 
+            timeout: dhtTimeout,
+            maxContentLength: 1024 * 1024, // 1MB response limit
+          }
+        );
+        logger.info(`✅ Remote DHT announcement completed for ${hash}`);
+      } catch (error: any) {
+        // DHT announce is nice-to-have, not critical
+        logger.warn(`⚠️ Remote DHT announcement failed (non-critical) for ${hash}: ${error.message}`);
+      }
+    } else if (localPinSucceeded) {
+      // For local pins, announce via local node
+      try {
+        logger.info(`📢 Starting local DHT announcement for ${hash}...`);
+        await this.client.dht.provide(hash);
+        logger.info(`✅ Local DHT announcement completed for ${hash}`);
+      } catch (error: any) {
+        // DHT announce is nice-to-have, not critical
+        logger.warn(`⚠️ Local DHT announcement failed (non-critical) for ${hash}: ${error.message}`);
+      }
+    }
+    
+    // Log summary of what happened
+    if (localPinSucceeded && !remotePinSucceeded) {
+      logger.warn(`🏠 FALLBACK USED: Content ${hash} pinned locally due to remote failures. Sync service should eventually migrate this to supernode.`);
     }
     
     logger.info(`🎯 TANK MODE: ${hash} is fully pinned, verified, and announced!`);
@@ -678,21 +778,77 @@ export class IPFSService {
 
   async pinHash(hash: string): Promise<void> {
     try {
-      await this.client.pin.add(hash);
-      logger.info(`📌 Pinned: ${hash}`);
+      // Use cluster for pins if enabled, otherwise use main daemon
+      if (this.config.ipfs?.use_cluster_for_pins) {
+        await this.pinHashWithCluster(hash);
+      } else {
+        await this.client.pin.add(hash);
+        logger.info(`📌 Pinned (main daemon): ${hash}`);
+      }
     } catch (error) {
       logger.error(`❌ Failed to pin ${hash}:`, error);
       throw error;
     }
   }
 
+  private async pinHashWithCluster(hash: string): Promise<void> {
+    const clusterEndpoint = this.config.ipfs?.cluster_endpoint || 'http://65.21.201.94:9094';
+    const axios = await import('axios');
+    
+    try {
+      const response = await axios.default.post(`${clusterEndpoint}/pins/${hash}`, null, {
+        timeout: 30000,
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      logger.info(`📌 Pinned (cluster): ${hash}`);
+      logger.debug(`Cluster pin response:`, response.data);
+    } catch (error: any) {
+      if (error.response) {
+        logger.error(`❌ Cluster pin failed for ${hash}: ${error.response.status} ${error.response.statusText}`);
+        if (error.response.data) {
+          logger.error(`Response data:`, error.response.data);
+        }
+      } else {
+        logger.error(`❌ Cluster pin request failed for ${hash}:`, error.message);
+      }
+      throw error;
+    }
+  }
+
   async unpinHash(hash: string): Promise<void> {
     try {
-      await this.client.pin.rm(hash);
-      logger.info(`📌 Unpinned: ${hash}`);
+      // Use cluster for pins if enabled, otherwise use main daemon  
+      if (this.config.ipfs?.use_cluster_for_pins) {
+        await this.unpinHashWithCluster(hash);
+      } else {
+        await this.client.pin.rm(hash);
+        logger.info(`📌 Unpinned (main daemon): ${hash}`);
+      }
     } catch (error) {
       logger.warn(`⚠️ Failed to unpin ${hash}:`, error);
       // Don't throw, unpinning failures are not critical
+    }
+  }
+
+  private async unpinHashWithCluster(hash: string): Promise<void> {
+    const clusterEndpoint = this.config.ipfs?.cluster_endpoint || 'http://65.21.201.94:9094';
+    const axios = await import('axios');
+    
+    try {
+      await axios.default.delete(`${clusterEndpoint}/pins/${hash}`, {
+        timeout: 30000,
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      logger.info(`📌 Unpinned (cluster): ${hash}`);
+    } catch (error: any) {
+      if (error.response) {
+        logger.warn(`⚠️ Cluster unpin failed for ${hash}: ${error.response.status} ${error.response.statusText}`);
+      } else {
+        logger.warn(`⚠️ Cluster unpin request failed for ${hash}:`, error.message);
+      }
+      throw error;
     }
   }
 
@@ -802,6 +958,65 @@ export class IPFSService {
     } catch (error: any) {
       logger.error(`🚨 Directory structure verification failed for ${hash}:`, error.message);
       return false;
+    }
+  }
+
+  /**
+   * Verify local pin status using local IPFS client
+   */
+  private async verifyLocalPinStatus(hash: string): Promise<boolean> {
+    try {
+      const pins = this.client.pin.ls({ paths: [hash] });
+      
+      for await (const pin of pins) {
+        if (pin.cid.toString() === hash) {
+          logger.info(`✅ Local pin verification succeeded for ${hash}`);
+          return true;
+        }
+      }
+      
+      logger.warn(`⚠️ Local pin verification failed - ${hash} not found in local pins`);
+      return false;
+      
+    } catch (error: any) {
+      logger.error(`❌ Local pin verification error for ${hash}:`, error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Log locally pinned content for future sync service processing
+   */
+  private async logLocalPin(hash: string): Promise<void> {
+    try {
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      
+      // Create logs directory if it doesn't exist
+      const logDir = path.join(process.cwd(), 'logs');
+      try {
+        await fs.mkdir(logDir, { recursive: true });
+      } catch (error) {
+        // Directory might already exist, ignore
+      }
+      
+      // Log locally pinned content with timestamp
+      const logEntry = {
+        hash: hash,
+        timestamp: new Date().toISOString(),
+        type: 'local_fallback_pin',
+        node_id: this.peerId || 'unknown'
+      };
+      
+      const logFile = path.join(logDir, 'local-pins.jsonl');
+      const logLine = JSON.stringify(logEntry) + '\n';
+      
+      await fs.appendFile(logFile, logLine);
+      logger.info(`📝 Logged local pin for future sync: ${hash}`);
+      
+    } catch (error: any) {
+      logger.warn(`⚠️ Failed to log local pin (non-critical): ${error.message}`);
+      // Don't throw - this is just for bookkeeping
     }
   }
 }

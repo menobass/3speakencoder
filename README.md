@@ -79,6 +79,8 @@ A modern, reliable replacement for the 3Speak video encoder with **dual-mode ope
 - 🔐 **DID Authentication**: Secure identity-based authentication for gateway
 - 🔑 **API Key Security**: Configurable API key authentication for direct requests
 - 🛡️ **TANK MODE Uploads**: Maximum reliability with Upload→Pin→Announce workflow
+- 🏗️ **IPFS Cluster Support**: Optional cluster pinning to reduce main daemon load
+- 🏠 **Local Fallback Pinning**: 3Speak nodes can pin locally when supernode is overloaded
 - 🚀 **Smart Retry System**: Cache results, skip wasteful re-processing on retries
 - 🔍 **Clean Error Logging**: No more buffer dumps, user-friendly error messages
 - 💪 **Production Ready**: 5-attempt retry logic with intelligent error handling
@@ -203,6 +205,10 @@ GATEWAY_POLL_INTERVAL=5000
 IPFS_GATEWAY=https://ipfs.3speak.tv
 IPFS_TIMEOUT=60000
 
+# IPFS Cluster Support (optional - reduces main daemon load)
+USE_CLUSTER_FOR_PINS=false
+IPFS_CLUSTER_ENDPOINT=http://65.21.201.94:9094
+
 # Processing settings
 WORK_DIR=./work
 MAX_CONCURRENT_JOBS=2
@@ -211,6 +217,57 @@ ENABLE_HARDWARE_ACCEL=true
 # TANK MODE for maximum reliability
 TANK_MODE=true
 ```
+
+### IPFS Cluster Pinning (Optional)
+
+⚠️ **Note**: Currently only works for encoders running on the supernode itself due to localhost-only API access.
+
+To reduce load on the main IPFS daemon, the encoder can use IPFS Cluster for pinning operations:
+
+```bash
+# Enable cluster pinning (reduces main daemon load)
+USE_CLUSTER_FOR_PINS=false  # Disabled by default due to access limitation
+
+# Cluster endpoint (requires localhost access or SSH tunnel)
+IPFS_CLUSTER_ENDPOINT=http://65.21.201.94:9094
+```
+
+**Benefits (when accessible):**
+- 🚀 Reduces load on main IPFS daemon (port 5002)
+- 📂 Uploads still use main daemon for optimal performance  
+- 📌 Pins route to cluster API to distribute load
+- 🔧 Automatic health checking and fallback
+
+See `docs/cluster-pinning.md` for detailed technical information and access solutions.
+
+### Local Fallback Pinning (3Speak Operated Nodes)
+
+⚠️ **For 3Speak infrastructure nodes only** - disabled by default to protect community encoders' storage.
+
+When the supernode IPFS is overloaded, 3Speak-operated encoding nodes can pin content locally and continue processing:
+
+```bash
+# Enable local fallback (3Speak nodes only)
+ENABLE_LOCAL_FALLBACK=true
+
+# Number of remote attempts before trying local (default: 3)
+LOCAL_FALLBACK_THRESHOLD=3
+```
+
+**How it works:**
+- 🎯 Try to pin to supernode first (normal operation)
+- 🏠 If supernode fails after X attempts, pin locally instead
+- ✅ Job continues and reports success to gateway
+- 📝 Local pins logged to `logs/local-pins.jsonl` for future sync
+- 🔄 Sync service (separate) can migrate local pins to supernode later
+
+**Benefits:**
+- 🚀 Keeps encoding pipeline running during supernode overload
+- 📦 Content stays available immediately (from local node)
+- 🔄 Eventually consistent (sync service handles migration)
+- 🛡️ No job failures due to temporary supernode issues
+
+See `docs/local-fallback-pinning.md` for detailed technical information.
 
 ### Configuration Examples
 
