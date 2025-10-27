@@ -43,6 +43,7 @@ pm2 stop encoder 2>/dev/null || true
 # Create/update encoder directory
 echo "📁 Setting up encoder directory..."
 mkdir -p "$ENCODER_DIR"
+chown $ENCODER_USER:$ENCODER_USER "$ENCODER_DIR"
 cd "$ENCODER_DIR"
 
 # Clone or update repository
@@ -52,6 +53,8 @@ if [ -d ".git" ]; then
     sudo -u $ENCODER_USER git pull origin main
 else
     echo "📥 Cloning repository..."
+    # Remove any existing content first
+    rm -rf * .[^.]* 2>/dev/null || true
     sudo -u $ENCODER_USER git clone https://github.com/menobass/3speakencoder.git .
 fi
 
