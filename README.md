@@ -73,7 +73,8 @@ A modern, reliable replacement for the 3Speak video encoder with **dual-mode ope
 ## ✨ Key Features
 
 - 🚀 **Dual-Mode Architecture**: Handles both 3Speak gateway jobs and direct API requests
-- 🎬 **Multi-Quality Encoding**: Automatic 1080p, 720p, 480p HLS output
+- �️ **Super Encoder Mode**: Can self-host videos with database tracking and automatic sync
+- �🎬 **Multi-Quality Encoding**: Automatic 1080p, 720p, 480p HLS output
 - 🔧 **Smart Codec Detection**: Hardware acceleration with automatic fallback
 - 📡 **Full API Compatibility**: Works with existing 3Speak gateway
 - 🔐 **DID Authentication**: Secure identity-based authentication for gateway
@@ -81,6 +82,7 @@ A modern, reliable replacement for the 3Speak video encoder with **dual-mode ope
 - 🛡️ **TANK MODE Uploads**: Maximum reliability with Upload→Pin→Announce workflow
 - 🏗️ **IPFS Cluster Support**: Optional cluster pinning to reduce main daemon load
 - 🏠 **Local Fallback Pinning**: 3Speak nodes can pin locally when supernode is overloaded
+- 📊 **Pin Database**: SQLite tracking of local pins with automatic sync service
 - 🚀 **Smart Retry System**: Cache results, skip wasteful re-processing on retries
 - 🔍 **Clean Error Logging**: No more buffer dumps, user-friendly error messages
 - 💪 **Production Ready**: 5-attempt retry logic with intelligent error handling
@@ -266,6 +268,32 @@ LOCAL_FALLBACK_THRESHOLD=3
 - 📦 Content stays available immediately (from local node)
 - 🔄 Eventually consistent (sync service handles migration)
 - 🛡️ No job failures due to temporary supernode issues
+
+See `docs/local-fallback-pinning.md` for detailed technical information.
+
+### Super Encoder Mode (3Speak Infrastructure)
+
+🏗️ **Complete video hosting solution** - for 3Speak-operated nodes that both encode AND host content.
+
+```bash
+# Enable super encoder capabilities
+ENABLE_LOCAL_FALLBACK=true
+LOCAL_FALLBACK_THRESHOLD=2
+
+# Automatic cleanup after sync (recommended)
+REMOVE_LOCAL_AFTER_SYNC=true
+```
+
+**Super Encoder Features:**
+- 🎯 **Smart Fallback**: Pin locally when supernode is busy, keep pipeline running
+- 📊 **SQLite Database**: Track all local pins with metadata and sync status
+- 🔄 **Background Sync**: Automatic migration of local pins to supernode
+- 🧹 **Auto Cleanup**: Remove local pins after successful sync (configurable)
+- 📈 **Stats & Monitoring**: Database stats and sync service metrics
+- 🛡️ **Resilient Pipeline**: Never lose jobs due to temporary supernode issues
+
+**Database Location**: `data/local-pins.db` - tracks all locally pinned content
+**Log Files**: `logs/local-pins.jsonl` - fallback if database unavailable
 
 See `docs/local-fallback-pinning.md` for detailed technical information.
 

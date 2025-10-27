@@ -1,14 +1,21 @@
 import { create } from 'ipfs-http-client';
 import { EncoderConfig } from '../config/ConfigLoader';
 import { logger } from './Logger';
+import { LocalPinDatabase, LocalPin } from './LocalPinDatabase';
 
 export class IPFSService {
   private config: EncoderConfig;
   private client: any;
   private peerId: string = '';
+  private pinDatabase: LocalPinDatabase | null = null;
 
   constructor(config: EncoderConfig) {
     this.config = config;
+    
+    // Initialize pin database if local fallback is enabled
+    if (this.config.ipfs?.enable_local_fallback) {
+      this.pinDatabase = new LocalPinDatabase();
+    }
   }
 
   async initialize(): Promise<void> {
@@ -33,6 +40,11 @@ export class IPFSService {
       this.peerId = identity.ID || identity.id;
       
       logger.info(`📂 IPFS connected: ${this.peerId}`);
+      
+      // Initialize pin database if needed
+      if (this.pinDatabase) {
+        await this.pinDatabase.initialize();
+      }
       
       // 🛡️ TANK MODE: Verify 3Speak IPFS node health
       await this.checkIPFSHealth();
@@ -987,8 +999,26 @@ export class IPFSService {
   /**
    * Log locally pinned content for future sync service processing
    */
-  private async logLocalPin(hash: string): Promise<void> {
+  private async logLocalPin(hash: string, jobId?: string, contentType?: string, sizeByes?: number): Promise<void> {
     try {
+      // Use database if available
+      if (this.pinDatabase) {
+        const pin: LocalPin = {
+          hash,
+          sync_status: 'pending'
+        };
+        
+        // Only set optional properties if they have values
+        if (jobId) pin.job_id = jobId;
+        if (contentType) pin.content_type = contentType;
+        if (sizeByes) pin.size_bytes = sizeByes;
+        
+        await this.pinDatabase.addLocalPin(pin);
+        logger.info(`📊 Added local pin to database: ${hash}`);
+        return;
+      }
+
+      // Fallback to file logging if no database
       const fs = await import('fs/promises');
       const path = await import('path');
       
@@ -1005,7 +1035,9 @@ export class IPFSService {
         hash: hash,
         timestamp: new Date().toISOString(),
         type: 'local_fallback_pin',
-        node_id: this.peerId || 'unknown'
+        node_id: this.peerId || 'unknown',
+        job_id: jobId,
+        content_type: contentType
       };
       
       const logFile = path.join(logDir, 'local-pins.jsonl');
