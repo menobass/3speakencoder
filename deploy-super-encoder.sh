@@ -58,13 +58,52 @@ else
     sudo -u $ENCODER_USER git clone https://github.com/menobass/3speakencoder.git .
 fi
 
-# Install dependencies
+# Install system dependencies
+echo "🗃️ Installing SQLite3..."
+apt update
+apt install -y sqlite3
+
+# Install Node.js dependencies
 echo "📦 Installing dependencies..."
 sudo -u $ENCODER_USER npm install
 
 # Build project
 echo "🔨 Building project..."
 sudo -u $ENCODER_USER npm run build
+
+# Initialize SQLite database
+echo "🗄️ Initializing SQLite database..."
+DB_PATH="$ENCODER_DIR/local-pins.db"
+if [ ! -f "$DB_PATH" ]; then
+    # Create database and tables
+    sudo -u $ENCODER_USER sqlite3 "$DB_PATH" <<EOF
+CREATE TABLE IF NOT EXISTS local_pins (
+    hash TEXT PRIMARY KEY,
+    size INTEGER,
+    pinned_at INTEGER,
+    sync_status TEXT DEFAULT 'pending',
+    sync_attempts INTEGER DEFAULT 0,
+    last_sync_attempt INTEGER,
+    created_at INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_status ON local_pins(sync_status);
+CREATE INDEX IF NOT EXISTS idx_pinned_at ON local_pins(pinned_at);
+
+-- Insert a test record to verify database works
+INSERT OR IGNORE INTO local_pins (hash, size, pinned_at, sync_status) 
+VALUES ('test_init_hash', 0, strftime('%s', 'now'), 'initialized');
+EOF
+    
+    echo "✅ Database initialized successfully!"
+    echo "📊 Database location: $DB_PATH"
+    
+    # Verify database was created properly
+    RECORD_COUNT=$(sudo -u $ENCODER_USER sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM local_pins;")
+    echo "📈 Database records: $RECORD_COUNT"
+else
+    echo "✅ Database already exists at $DB_PATH"
+fi
 
 # Create required directories
 echo "📂 Creating required directories..."
@@ -159,6 +198,32 @@ chown $ENCODER_USER:$ENCODER_USER "$ENCODER_DIR/check-stats.js"
 # Setup systemd
 systemctl daemon-reload
 systemctl enable super-encoder
+
+# Verify installation
+echo ""
+echo "🔍 Verifying installation..."
+echo "✅ Checking SQLite installation..."
+if command -v sqlite3 >/dev/null 2>&1; then
+    echo "   SQLite3 version: $(sqlite3 --version)"
+else
+    echo "   ❌ SQLite3 not found!"
+fi
+
+echo "✅ Checking database..."
+DB_PATH="$ENCODER_DIR/local-pins.db"
+if [ -f "$DB_PATH" ]; then
+    RECORD_COUNT=$(sudo -u $ENCODER_USER sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM local_pins;" 2>/dev/null || echo "0")
+    echo "   Database exists with $RECORD_COUNT records"
+else
+    echo "   ❌ Database not found at $DB_PATH"
+fi
+
+echo "✅ Checking Node.js build..."
+if [ -d "$ENCODER_DIR/dist" ]; then
+    echo "   Build directory exists"
+else
+    echo "   ❌ Build directory missing"
+fi
 
 echo ""
 echo "🎉 Super Encoder deployment completed!"
