@@ -118,4 +118,4 @@ export interface SystemCapabilities {
 }
 
 // Re-export DirectApi types
-export * from './DirectApi';
+export * from './DirectApi.js';
