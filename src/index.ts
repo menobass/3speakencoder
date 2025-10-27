@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { ThreeSpeakEncoder } from './services/ThreeSpeakEncoder';
-import { DashboardService } from './services/DashboardService';
-import { logger } from './services/Logger';
-import { loadConfig } from './config/ConfigLoader';
+import { ThreeSpeakEncoder } from './services/ThreeSpeakEncoder.js';
+import { DashboardService } from './services/DashboardService.js';
+import { logger } from './services/Logger.js';
+import { loadConfig } from './config/ConfigLoader.js';
 
 async function main() {
   try {
