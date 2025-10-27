@@ -1,11 +1,11 @@
-import { VideoJob } from '../types/index';
-import { DirectJob } from '../types/DirectApi';
-import { VideoProcessor } from './VideoProcessor';
-import { GatewayClient } from './GatewayClient';
-import { WebhookService } from './WebhookService';
-import { JobQueue, QueuedJob } from './JobQueue';
-import { JobStatus } from '../types/index';
-import { logger } from './Logger';
+import { VideoJob } from '../types/index.js';
+import { DirectJob } from '../types/DirectApi.js';
+import { VideoProcessor } from './VideoProcessor.js';
+import { GatewayClient } from './GatewayClient.js';
+import { WebhookService } from './WebhookService.js';
+import { JobQueue, QueuedJob } from './JobQueue.js';
+import { JobStatus } from '../types/index.js';
+import { logger } from './Logger.js';
 import { cleanErrorForLogging } from '../common/errorUtils.js';
 
 export class JobProcessor {

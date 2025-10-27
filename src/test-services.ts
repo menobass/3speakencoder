@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { logger } from './services/Logger';
+import { logger } from './services/Logger.js';
 
 async function testServices() {
   try {

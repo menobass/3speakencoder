@@ -1,9 +1,9 @@
 import express from 'express';
 import { Server } from 'http';
-import { EncoderConfig } from '../config/ConfigLoader';
-import { logger } from './Logger';
-import { JobQueue } from '../services/JobQueue';
-import { DirectJob, DirectJobRequest, DirectJobResponse, JobStatus } from '../types/index';
+import { EncoderConfig } from '../config/ConfigLoader.js';
+import { logger } from './Logger.js';
+import { JobQueue } from '../services/JobQueue.js';
+import { DirectJob, DirectJobRequest, DirectJobResponse, JobStatus } from '../types/index.js';
 
 export class DirectApiService {
   private app: express.Application;

@@ -1,14 +1,14 @@
 import ffmpeg from 'fluent-ffmpeg';
-import { EncoderConfig } from '../config/ConfigLoader';
-import { VideoJob, EncodedOutput, CodecCapability, EncodingProgress } from '../types';
-import { logger } from './Logger';
+import { EncoderConfig } from '../config/ConfigLoader.js';
+import { VideoJob, EncodedOutput, CodecCapability, EncodingProgress } from '../types/index.js';
+import { logger } from './Logger.js';
 import { promises as fs } from 'fs';
 import { createWriteStream } from 'fs';
 import { join, dirname } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
-import { IPFSService } from './IPFSService';
-import { DashboardService } from './DashboardService';
+import { IPFSService } from './IPFSService.js';
+import { DashboardService } from './DashboardService.js';
 import { cleanErrorForLogging } from '../common/errorUtils.js';
 
 export class VideoProcessor {

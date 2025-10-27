@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { logger } from './Logger';
-import { EncoderConfig } from '../config/ConfigLoader';
+import { logger } from './Logger.js';
+import { EncoderConfig } from '../config/ConfigLoader.js';
 
 export interface EncoderIdentity {
   encoderId: string;

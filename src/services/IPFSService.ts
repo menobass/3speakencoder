@@ -1,7 +1,7 @@
 import { create } from 'ipfs-http-client';
-import { EncoderConfig } from '../config/ConfigLoader';
-import { logger } from './Logger';
-import { LocalPinDatabase, LocalPin } from './LocalPinDatabase';
+import { EncoderConfig } from '../config/ConfigLoader.js';
+import { logger } from './Logger.js';
+import { LocalPinDatabase, LocalPin } from './LocalPinDatabase.js';
 
 export class IPFSService {
   private config: EncoderConfig;

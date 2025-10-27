@@ -1,8 +1,8 @@
 import axios, { AxiosInstance } from 'axios';
-import { EncoderConfig } from '../config/ConfigLoader';
-import { VideoJob, NodeInfo, GatewayJobResponse } from '../types';
-import { IdentityService } from './IdentityService';
-import { logger } from './Logger';
+import { EncoderConfig } from '../config/ConfigLoader.js';
+import { VideoJob, NodeInfo, GatewayJobResponse } from '../types/index.js';
+import { IdentityService } from './IdentityService.js';
+import { logger } from './Logger.js';
 import { cleanErrorForLogging } from '../common/errorUtils.js';
 
 export class GatewayClient {

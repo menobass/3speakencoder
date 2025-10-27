@@ -1,6 +1,6 @@
 import sqlite3 from 'sqlite3';
 import { Database, open } from 'sqlite';
-import { logger } from './Logger';
+import { logger } from './Logger.js';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 

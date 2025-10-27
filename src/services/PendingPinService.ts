@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import { join } from 'path';
-import { logger } from './Logger';
+import { logger } from './Logger.js';
 
 export interface PendingPin {
   hash: string;

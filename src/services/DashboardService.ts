@@ -1,7 +1,7 @@
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import { createServer } from 'http';
-import { logger } from './Logger';
+import { logger } from './Logger.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 

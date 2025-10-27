@@ -1,6 +1,6 @@
 import axios from 'axios';
-import { logger } from './Logger';
-import { WebhookPayload } from '../types/DirectApi';
+import { logger } from './Logger.js';
+import { WebhookPayload } from '../types/DirectApi.js';
 
 export class WebhookService {
   private maxRetries: number = 3;

@@ -1,4 +1,4 @@
-import { EncodedOutput, JobStatus, VideoProfile } from './index';
+import { EncodedOutput, JobStatus, VideoProfile } from './index.js';
 
 // Direct API Types for miniservice integration
 export interface DirectJobRequest {

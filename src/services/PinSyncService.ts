@@ -1,6 +1,6 @@
-import { LocalPinDatabase, LocalPin } from './LocalPinDatabase';
-import { logger } from './Logger';
-import { EncoderConfig } from '../config/ConfigLoader';
+import { LocalPinDatabase, LocalPin } from './LocalPinDatabase.js';
+import { logger } from './Logger.js';
+import { EncoderConfig } from '../config/ConfigLoader.js';
 
 export class PinSyncService {
   private database: LocalPinDatabase;

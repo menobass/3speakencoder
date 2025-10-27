@@ -1,9 +1,9 @@
-import { EncoderConfig } from '../config/ConfigLoader';
+import { EncoderConfig } from '../config/ConfigLoader.js';
 import { Ed25519Provider } from 'key-did-provider-ed25519';
 import KeyResolver from 'key-did-resolver';
 import { DID, DagJWS } from 'dids';
 import * as crypto from 'crypto';
-import { logger } from './Logger';
+import { logger } from './Logger.js';
 
 export interface JWSPayload {
   [key: string]: any;

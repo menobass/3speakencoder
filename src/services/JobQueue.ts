@@ -1,7 +1,7 @@
-import { VideoJob } from '../types/index';
-import { DirectJob, DirectJobRequest } from '../types/DirectApi';
-import { logger } from './Logger';
-import { JobStatus } from '../types/index';
+import { VideoJob } from '../types/index.js';
+import { DirectJob, DirectJobRequest } from '../types/DirectApi.js';
+import { logger } from './Logger.js';
+import { JobStatus } from '../types/index.js';
 
 export interface JobRetryInfo {
   attempts: number;
