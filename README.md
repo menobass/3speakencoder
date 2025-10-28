@@ -195,7 +195,7 @@ HIVE_USERNAME=your-hive-username
 ENCODER_PRIVATE_KEY=generate-and-paste-your-key-here
 
 # Gateway Configuration
-GATEWAY_URL=https://encoder-gateway.infra.3speak.tv
+GATEWAY_URL=https://encoder.3speak.tv
 QUEUE_MAX_LENGTH=1
 QUEUE_CONCURRENCY=1
 ASYNC_UPLOADS=false

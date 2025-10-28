@@ -295,7 +295,7 @@ HIVE_USERNAME=$HIVE_USERNAME
 ENCODER_PRIVATE_KEY=$ENCODER_PRIVATE_KEY
 
 # Gateway Configuration
-GATEWAY_URL=https://encoder-gateway.infra.3speak.tv
+GATEWAY_URL=https://encoder.3speak.tv
 QUEUE_MAX_LENGTH=1
 QUEUE_CONCURRENCY=1
 ASYNC_UPLOADS=false
@@ -377,7 +377,7 @@ HIVE_USERNAME=$HIVE_USERNAME
 ENCODER_PRIVATE_KEY=$ENCODER_PRIVATE_KEY
 
 # Gateway Configuration
-GATEWAY_URL=https://encoder-gateway.infra.3speak.tv
+GATEWAY_URL=https://encoder.3speak.tv
 QUEUE_MAX_LENGTH=1
 QUEUE_CONCURRENCY=1
 ASYNC_UPLOADS=false
