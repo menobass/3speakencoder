@@ -291,10 +291,22 @@ export class GatewayClient {
       throw new Error('Identity service not set');
     }
 
-    const jws = await this.identity.createJWS({ 
-      job_id: jobId,
-      status
-    });
+    // 🚨 LEGACY-COMPATIBLE: Use exact format expected by gateway
+    const payload: any = { 
+      job_id: jobId
+    };
+    
+    // Add progress fields in legacy format
+    if (status.progress !== undefined) {
+      payload.progressPct = Math.max(1.0, status.progress); // ⚠️ Must be > 1 to trigger "running" status
+    }
+    
+    if (status.download_pct !== undefined) {
+      payload.download_pct = status.download_pct;
+    }
+    
+    // Legacy expects progressPct + download_pct, NOT generic status
+    const jws = await this.identity.createJWS(payload);
     
     await this.client.post('/api/v0/gateway/pingJob', {
       jws

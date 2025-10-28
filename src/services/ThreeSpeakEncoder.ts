@@ -555,9 +555,12 @@ export class ThreeSpeakEncoder {
       await this.gateway.acceptJob(jobId);
       logger.info(`✅ Accepted gateway job: ${jobId}`);
 
-      // Update status to running
+      // Update status to running using legacy-compatible format
       job.status = JobStatus.RUNNING;
-      await this.gateway.pingJob(jobId, { status: JobStatus.RUNNING });
+      await this.gateway.pingJob(jobId, { 
+        progressPct: 1.0,    // ⚠️ CRITICAL: Must be > 1 to trigger gateway status change
+        download_pct: 100    // Download complete at this point
+      });
 
       let result: any;
       
@@ -581,10 +584,11 @@ export class ThreeSpeakEncoder {
             this.dashboard.updateJobProgress(job.id, progress.percent);
           }
           
-          // Update progress with gateway (fire-and-forget to prevent memory leaks)
+          // Update progress with gateway (fire-and-forget to prevent memory leaks) - LEGACY FORMAT
           this.safePingJob(jobId, { 
-            status: JobStatus.RUNNING,
-            progress: progress.percent 
+            progress: progress.percent,        // Our internal format
+            progressPct: progress.percent,     // Legacy gateway format
+            download_pct: 100                  // Download always complete during encoding
           });
         });
         
@@ -802,19 +806,23 @@ export class ThreeSpeakEncoder {
       this.activeJobs.set(jobId, job);
       logger.info(`✅ Accepted job: ${jobId}`);
 
-      // Update status to running
+      // Update status to running using legacy-compatible format
       job.status = JobStatus.RUNNING;
-      await this.gateway.pingJob(jobId, { status: JobStatus.RUNNING });
+      await this.gateway.pingJob(jobId, { 
+        progressPct: 1.0,    // ⚠️ CRITICAL: Must be > 1 to trigger gateway status change
+        download_pct: 100    // Download complete at this point
+      });
 
       // Set current job ID for dashboard progress tracking
       this.processor.setCurrentJob(jobId);
 
       // Process the video
       const result = await this.processor.processVideo(job, (progress: EncodingProgress) => {
-        // Update progress (fire-and-forget to prevent memory leaks)
+        // Update progress (fire-and-forget to prevent memory leaks) - LEGACY FORMAT
         this.safePingJob(jobId, { 
-          status: JobStatus.RUNNING,
-          progress: progress.percent 
+          progress: progress.percent,        // Our internal format
+          progressPct: progress.percent,     // Legacy gateway format
+          download_pct: 100                  // Download always complete during encoding
         });
       }, (hash: string, error: Error) => {
         // 🔄 LAZY PINNING: Queue failed pins for background retry
