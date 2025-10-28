@@ -276,6 +276,12 @@ if [[ "$ENCODER_MODE" == "direct" ]] || [[ "$ENCODER_MODE" == "dual" ]]; then
     echo "⚠️  Keep this key secret - you'll need it to make API requests!"
 fi
 
+# Generate encoder private key for persistent identity
+echo ""
+echo "🔑 Generating secure encoder identity..."
+ENCODER_PRIVATE_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")
+echo "✅ Generated persistent encoder identity"
+
 # Create .env file based on mode
 echo "⚙️  Creating configuration..."
 
@@ -285,22 +291,40 @@ if [[ "$ENCODER_MODE" == "gateway" ]]; then
 # 3Speak Encoder Configuration - Gateway Mode
 HIVE_USERNAME=$HIVE_USERNAME
 
-# Gateway mode settings
+# 🚨 CRITICAL: DID Identity Authentication Key (REQUIRED for persistent identity)
+ENCODER_PRIVATE_KEY=$ENCODER_PRIVATE_KEY
+
+# Gateway Configuration
+GATEWAY_URL=https://encoder-gateway.infra.3speak.tv
+QUEUE_MAX_LENGTH=1
+QUEUE_CONCURRENCY=1
+ASYNC_UPLOADS=false
 REMOTE_GATEWAY_ENABLED=true
+
+# IPFS Configuration
+IPFS_API_ADDR=/ip4/127.0.0.1/tcp/5001
+THREESPEAK_IPFS_ENDPOINT=http://65.21.201.94:5002
+
+# IPFS Cluster Support (optional - reduces main daemon load)
+USE_CLUSTER_FOR_PINS=false
+IPFS_CLUSTER_ENDPOINT=http://65.21.201.94:9094
+
+# Local Fallback Pinning (optional - for 3Speak-operated encoder nodes)
+ENABLE_LOCAL_FALLBACK=false
+LOCAL_FALLBACK_THRESHOLD=3
+REMOVE_LOCAL_AFTER_SYNC=true
+
+# Encoder Configuration
+TEMP_DIR=./temp
+FFMPEG_PATH=/usr/bin/ffmpeg
+HARDWARE_ACCELERATION=true
+MAX_CONCURRENT_JOBS=1
+
+# Node Configuration
+NODE_NAME=3speak-encoder-node
 
 # Direct API disabled for gateway-only mode
 DIRECT_API_ENABLED=false
-
-# 🔑 Persistent Encoder Identity (CRITICAL - keeps same identity across restarts)
-ENCODER_PRIVATE_KEY=$ENCODER_PRIVATE_KEY
-# ⚠️  This is NOT your Hive key - it's for encoder authentication only
-# ✅ Keep this secret and backed up - losing it creates a "new encoder"
-
-# Logging
-LOG_LEVEL=info
-
-# Optional: Custom work directory
-# WORK_DIR=/path/to/encoding/workspace
 EOF
 
 elif [[ "$ENCODER_MODE" == "direct" ]]; then
@@ -309,24 +333,38 @@ elif [[ "$ENCODER_MODE" == "direct" ]]; then
 # 3Speak Encoder Configuration - Direct API Mode
 HIVE_USERNAME=$HIVE_USERNAME
 
-# Disable gateway mode (direct API only)
+# 🚨 CRITICAL: DID Identity Authentication Key (REQUIRED for persistent identity)
+ENCODER_PRIVATE_KEY=$ENCODER_PRIVATE_KEY
+
+# Gateway Configuration (disabled for direct mode)
 REMOTE_GATEWAY_ENABLED=false
+
+# IPFS Configuration
+IPFS_API_ADDR=/ip4/127.0.0.1/tcp/5001
+THREESPEAK_IPFS_ENDPOINT=http://65.21.201.94:5002
+
+# IPFS Cluster Support (optional - reduces main daemon load)
+USE_CLUSTER_FOR_PINS=false
+IPFS_CLUSTER_ENDPOINT=http://65.21.201.94:9094
+
+# Local Fallback Pinning (optional - for 3Speak-operated encoder nodes)
+ENABLE_LOCAL_FALLBACK=false
+LOCAL_FALLBACK_THRESHOLD=3
+REMOVE_LOCAL_AFTER_SYNC=true
+
+# Encoder Configuration
+TEMP_DIR=./temp
+FFMPEG_PATH=/usr/bin/ffmpeg
+HARDWARE_ACCELERATION=true
+MAX_CONCURRENT_JOBS=1
+
+# Node Configuration
+NODE_NAME=3speak-encoder-node
 
 # Direct API settings
 DIRECT_API_ENABLED=true
 DIRECT_API_PORT=3002
 DIRECT_API_KEY=$API_KEY
-
-# 🔑 Persistent Encoder Identity (CRITICAL - keeps same identity across restarts)
-ENCODER_PRIVATE_KEY=$ENCODER_PRIVATE_KEY
-# ⚠️  This is NOT your Hive key - it's for encoder authentication only
-# ✅ Keep this secret and backed up - losing it creates a "new encoder"
-
-# Logging
-LOG_LEVEL=info
-
-# Optional: Custom work directory
-# WORK_DIR=/path/to/encoding/workspace
 EOF
 
 else
@@ -335,24 +373,42 @@ else
 # 3Speak Encoder Configuration - Dual Mode
 HIVE_USERNAME=$HIVE_USERNAME
 
-# Gateway mode enabled
+# 🚨 CRITICAL: DID Identity Authentication Key (REQUIRED for persistent identity)
+ENCODER_PRIVATE_KEY=$ENCODER_PRIVATE_KEY
+
+# Gateway Configuration
+GATEWAY_URL=https://encoder-gateway.infra.3speak.tv
+QUEUE_MAX_LENGTH=1
+QUEUE_CONCURRENCY=1
+ASYNC_UPLOADS=false
 REMOTE_GATEWAY_ENABLED=true
+
+# IPFS Configuration
+IPFS_API_ADDR=/ip4/127.0.0.1/tcp/5001
+THREESPEAK_IPFS_ENDPOINT=http://65.21.201.94:5002
+
+# IPFS Cluster Support (optional - reduces main daemon load)
+USE_CLUSTER_FOR_PINS=false
+IPFS_CLUSTER_ENDPOINT=http://65.21.201.94:9094
+
+# Local Fallback Pinning (optional - for 3Speak-operated encoder nodes)
+ENABLE_LOCAL_FALLBACK=false
+LOCAL_FALLBACK_THRESHOLD=3
+REMOVE_LOCAL_AFTER_SYNC=true
+
+# Encoder Configuration
+TEMP_DIR=./temp
+FFMPEG_PATH=/usr/bin/ffmpeg
+HARDWARE_ACCELERATION=true
+MAX_CONCURRENT_JOBS=1
+
+# Node Configuration
+NODE_NAME=3speak-encoder-node
 
 # Direct API enabled
 DIRECT_API_ENABLED=true
 DIRECT_API_PORT=3002
 DIRECT_API_KEY=$API_KEY
-
-# 🔑 Persistent Encoder Identity (CRITICAL - keeps same identity across restarts)
-ENCODER_PRIVATE_KEY=$ENCODER_PRIVATE_KEY
-# ⚠️  This is NOT your Hive key - it's for encoder authentication only
-# ✅ Keep this secret and backed up - losing it creates a "new encoder"
-
-# Logging
-LOG_LEVEL=info
-
-# Optional: Custom work directory
-# WORK_DIR=/path/to/encoding/workspace
 EOF
 
 fi

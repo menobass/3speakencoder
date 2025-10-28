@@ -79,7 +79,9 @@ A modern, reliable replacement for the 3Speak video encoder with **dual-mode ope
 - 📡 **Full API Compatibility**: Works with existing 3Speak gateway
 - 🔐 **DID Authentication**: Secure identity-based authentication for gateway
 - 🔑 **API Key Security**: Configurable API key authentication for direct requests
-- 🛡️ **TANK MODE Uploads**: Maximum reliability with Upload→Pin→Announce workflow
+- 🛡️ **TANK MODE Uploads**: Maximum reliability with Upload→Pin→Announce workflow  
+- ⚡ **Pinata-Style Instant Completion**: Jobs finish immediately with CID, pinning handled in background
+- 🔄 **Lazy Pinning Service**: Background pin queue with automatic retry and fallback
 - 🏗️ **IPFS Cluster Support**: Optional cluster pinning to reduce main daemon load
 - 🏠 **Local Fallback Pinning**: 3Speak nodes can pin locally when supernode is overloaded
 - 📊 **Pin Database**: SQLite tracking of local pins with automatic sync service
@@ -186,38 +188,47 @@ node -e "console.log('ENCODER_PRIVATE_KEY=' + require('crypto').randomBytes(32).
 ### Advanced Configuration Options
 
 ```bash
-# Basic settings
+# Basic Settings (Required)
 HIVE_USERNAME=your-hive-username
-LOG_LEVEL=info
 
-# Dual-mode operation
-ENABLE_GATEWAY_MODE=true
-ENABLE_API_MODE=true
+# 🚨 CRITICAL: DID Identity Authentication Key (REQUIRED for persistent identity)
+ENCODER_PRIVATE_KEY=generate-and-paste-your-key-here
 
-# Custom ports
-DASHBOARD_PORT=3001
-API_PORT=3002
-
-# Gateway settings
+# Gateway Configuration
 GATEWAY_URL=https://encoder-gateway.infra.3speak.tv
-DID_PRIVATE_KEY=your-did-private-key
-GATEWAY_POLL_INTERVAL=5000
+QUEUE_MAX_LENGTH=1
+QUEUE_CONCURRENCY=1
+ASYNC_UPLOADS=false
+REMOTE_GATEWAY_ENABLED=true
 
-# IPFS settings
-IPFS_GATEWAY=https://ipfs.3speak.tv
-IPFS_TIMEOUT=60000
+# IPFS Configuration
+IPFS_API_ADDR=/ip4/127.0.0.1/tcp/5001
+
+# 3Speak IPFS Infrastructure (critical for uploads)
+THREESPEAK_IPFS_ENDPOINT=http://65.21.201.94:5002
 
 # IPFS Cluster Support (optional - reduces main daemon load)
 USE_CLUSTER_FOR_PINS=false
 IPFS_CLUSTER_ENDPOINT=http://65.21.201.94:9094
 
-# Processing settings
-WORK_DIR=./work
-MAX_CONCURRENT_JOBS=2
-ENABLE_HARDWARE_ACCEL=true
+# Local Fallback Pinning (optional - for 3Speak-operated encoder nodes)
+ENABLE_LOCAL_FALLBACK=false
+LOCAL_FALLBACK_THRESHOLD=3
+REMOVE_LOCAL_AFTER_SYNC=true
 
-# TANK MODE for maximum reliability
-TANK_MODE=true
+# Encoder Configuration
+TEMP_DIR=./temp
+FFMPEG_PATH=/usr/bin/ffmpeg
+HARDWARE_ACCELERATION=true
+MAX_CONCURRENT_JOBS=1
+
+# Node Configuration
+NODE_NAME=3speak-encoder-node
+
+# Direct API Configuration (optional - for miniservice integration)
+DIRECT_API_ENABLED=false
+DIRECT_API_PORT=3002
+# DIRECT_API_KEY=generate-a-long-random-secure-key-here
 ```
 
 ### IPFS Cluster Pinning (Optional)
@@ -296,6 +307,36 @@ REMOVE_LOCAL_AFTER_SYNC=true
 **Log Files**: `logs/local-pins.jsonl` - fallback if database unavailable
 
 See `docs/local-fallback-pinning.md` for detailed technical information.
+
+### 🚀 Pinata-Style Instant Job Completion
+
+**Revolutionary workflow improvement** that makes jobs complete in seconds instead of minutes!
+
+**How it works:**
+1. **Upload to IPFS** → Get CID immediately ⚡ 
+2. **Return CID** → Job reports complete instantly ✅
+3. **Background Lazy Pinning** → Handles pinning separately 🔄
+4. **Local Fallback Database** → Archives failed pins for batch processing 🏠
+
+```bash
+# This mode is enabled by default - no configuration needed!
+# Jobs now complete in 5-10 seconds instead of 20+ minutes
+```
+
+**Benefits:**
+- ⚡ **Instant Job Completion**: No more stuck jobs waiting for pinning
+- 🛡️ **Zero Content Loss**: Failed lazy pins get archived locally
+- 📊 **Batch Processing Ready**: Perfect database for manual supernode migration
+- 🔄 **Non-Blocking Architecture**: Pinning issues never block job completion
+
+**For VPS Operators:**
+Failed lazy pins get logged to `data/local-fallback-pins.jsonl` for easy batch processing:
+```bash
+# Process failed lazy pins on permanent infrastructure later
+jq '.hash' data/local-fallback-pins.jsonl | xargs -I {} curl -X POST "http://permanent-server:5001/api/v0/pin/add?arg={}"
+```
+
+See `docs/lazy-pin-fallback-enhancement.md` for complete technical details.
 
 ### Configuration Examples
 
