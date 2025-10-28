@@ -239,9 +239,15 @@ export class IPFSService {
       
       fileStream.on('error', handleStreamError);
       
-      // Calculate timeout based on file size
-      const timeoutMs = Math.max(60000, 60000 + Math.floor(stats.size / (10 * 1024 * 1024)) * 30000);
-      logger.info(`⏱️ Upload timeout set to: ${Math.floor(timeoutMs / 1000)}s`);
+      // Calculate timeout based on file size with reasonable limits
+      const baseTimeout = 60000;  // 1 minute base
+      const perMBTimeout = 10000;  // 10 seconds per MB (reduced from 30s per 10MB)
+      const maxTimeout = 600000;   // 10 minutes maximum
+      
+      const calculatedTimeout = baseTimeout + Math.floor(stats.size / (1024 * 1024)) * perMBTimeout;
+      const timeoutMs = Math.min(calculatedTimeout, maxTimeout);
+      
+      logger.info(`⏱️ Upload timeout: ${Math.floor(timeoutMs / 1000)}s (size: ${(stats.size/1024/1024).toFixed(1)}MB, max: ${maxTimeout/1000}s)`);
       
       const response = await axios.default.post(`${threeSpeakIPFS}/api/v0/add`, form, {
         headers: {
@@ -396,9 +402,15 @@ export class IPFSService {
     
     logger.info(`📦 Total directory size: ${(totalSize / 1024 / 1024).toFixed(1)}MB in ${files.length} files`);
     
-    // Calculate timeout based on total size
-    const timeoutMs = Math.max(120000, Math.floor(totalSize / (1024 * 1024)) * 10000); // 2min base + 10s per MB
-    logger.info(`⏱️ Directory upload timeout set to: ${Math.floor(timeoutMs / 1000)}s`);
+    // Calculate timeout based on total size with reasonable limits
+    const baseTiimeout = 120000; // 2 minutes base
+    const perMBTimeout = 5000;   // 5 seconds per MB (reduced from 10s)
+    const maxTimeout = 900000;   // 15 minutes maximum (was 6+ hours!)
+    
+    const calculatedTimeout = baseTiimeout + Math.floor(totalSize / (1024 * 1024)) * perMBTimeout;
+    const timeoutMs = Math.min(calculatedTimeout, maxTimeout);
+    
+    logger.info(`⏱️ Directory upload timeout: ${Math.floor(timeoutMs / 1000)}s (size: ${(totalSize/1024/1024).toFixed(1)}MB, max: ${maxTimeout/1000}s)`);
     
     try {
       const response = await axios.default.post(`${threeSpeakIPFS}/api/v0/add?wrap-with-directory=true&recursive=true`, form, {

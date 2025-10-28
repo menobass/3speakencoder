@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { ThreeSpeakEncoder } from './services/ThreeSpeakEncoder.js';
 import { DashboardService } from './services/DashboardService.js';
-import { logger } from './services/Logger.js';
+import { logger, dashboardTransport } from './services/Logger.js';
 import { loadConfig } from './config/ConfigLoader.js';
 
 async function main() {
@@ -16,6 +16,10 @@ async function main() {
     const dashboard = new DashboardService(3001);
     await dashboard.start();
     logger.info(`📊 Dashboard available at: ${dashboard.getUrl()}`);
+    
+    // Connect logger to dashboard for live log streaming
+    dashboardTransport.setDashboard(dashboard);
+    logger.info('✅ Live dashboard logs enabled');
     
     // Initialize and start encoder
     const encoder = new ThreeSpeakEncoder(config, dashboard);

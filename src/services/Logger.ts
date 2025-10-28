@@ -1,4 +1,36 @@
 import winston from 'winston';
+import Transport from 'winston-transport';
+import { DashboardService } from './DashboardService.js';
+
+// Custom Winston transport that forwards logs to dashboard
+class DashboardTransport extends Transport {
+  private dashboard?: DashboardService;
+
+  constructor(options: any = {}) {
+    super(options);
+  }
+
+  setDashboard(dashboard: DashboardService): void {
+    this.dashboard = dashboard;
+  }
+
+  override log(info: any, callback: () => void): void {
+    if (this.dashboard) {
+      // Forward log to dashboard - extract clean message and metadata
+      const message = info.message || '';
+      const meta = { ...info };
+      delete meta.message;
+      delete meta.level;
+      delete meta.timestamp;
+      
+      this.dashboard.sendLog(info.level, message, Object.keys(meta).length > 0 ? meta : undefined);
+    }
+    callback();
+  }
+}
+
+// Create dashboard transport instance
+export const dashboardTransport = new DashboardTransport();
 
 // Create logger instance
 export const logger = winston.createLogger({
@@ -21,7 +53,8 @@ export const logger = winston.createLogger({
     }),
     new winston.transports.File({
       filename: 'encoder.log'
-    })
+    }),
+    dashboardTransport  // Add dashboard transport for live logs
   ]
 });
 
