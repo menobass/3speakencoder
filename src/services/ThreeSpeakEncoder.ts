@@ -45,7 +45,8 @@ export class ThreeSpeakEncoder {
       5, // maxRetries (increased for gateway server issues)
       3 * 60 * 1000 // 3 minutes (reduced for faster recovery)
     );
-    this.pendingPinService = new PendingPinService();
+    // 🏠 Pass config and IPFS client for local fallback support
+    this.pendingPinService = new PendingPinService('./data', config, this.ipfs.getClient());
     
     // Initialize DirectApiService if enabled
     if (config.direct_api?.enabled) {

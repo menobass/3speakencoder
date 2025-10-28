@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { logger } from './Logger.js';
+import type { EncoderConfig } from '../config/ConfigLoader.js';
 
 export interface PendingPin {
   hash: string;
@@ -27,10 +28,14 @@ export class PendingPinService {
   private maxEntries: number = 1000; // Prevent file from growing too large
   private maxAttempts: number = 3;
   private retryDelayMs: number = 5 * 60 * 1000; // 5 minutes between retries
+  private config: EncoderConfig;
+  private ipfsClient: any; // We'll inject this if needed
 
-  constructor(dataDir: string = './data') {
+  constructor(dataDir: string = './data', config?: EncoderConfig, ipfsClient?: any) {
     this.filePath = join(dataDir, 'pending_pins.json');
     this.lockPath = join(dataDir, 'pending_pins.lock');
+    this.config = config!;
+    this.ipfsClient = ipfsClient;
   }
 
   async initialize(): Promise<void> {
@@ -167,6 +172,13 @@ export class PendingPinService {
           const index = data.pending_pins.indexOf(pin);
           data.pending_pins.splice(index, 1);
           logger.warn(`❌ Lazy pin failed permanently after ${this.maxAttempts} attempts: ${hash} - ${error}`);
+          
+          // 🏠 Try local fallback if enabled - THIS IS THE KEY ENHANCEMENT!
+          if (this.config?.ipfs?.enable_local_fallback && this.ipfsClient) {
+            await this.tryLocalFallbackForFailedLazyPin(hash, pin);
+          } else {
+            logger.info(`💾 Content ${hash} lost - no local fallback enabled. Enable ENABLE_LOCAL_FALLBACK=true for database archival.`);
+          }
         } else {
           logger.warn(`⚠️ Lazy pin attempt ${pin.attempts}/${this.maxAttempts} failed: ${hash} - ${error}`);
         }
@@ -327,5 +339,57 @@ export class PendingPinService {
   private async writeData(data: PendingPinData): Promise<void> {
     const content = JSON.stringify(data, null, 2);
     await fs.writeFile(this.filePath, content, 'utf8');
+  }
+
+  /**
+   * 🏠 LOCAL FALLBACK: Try to pin locally when lazy pinning fails permanently
+   * This creates a database of locally pinned content for batch processing later
+   */
+  private async tryLocalFallbackForFailedLazyPin(hash: string, pin: PendingPin): Promise<void> {
+    try {
+      logger.info(`🏠 LAZY PIN FALLBACK: Trying local pin for permanently failed lazy pin: ${hash}`);
+      
+      // Pin to local IPFS daemon
+      await this.ipfsClient.pin.add(hash);
+      
+      // Log to database for batch processing later
+      await this.logLocalFallbackPin(hash, pin);
+      
+      logger.info(`✅ LAZY PIN FALLBACK: Successfully pinned ${hash} locally (${pin.size_mb.toFixed(1)}MB)`);
+      logger.info(`💾 DATABASE: Content archived locally for batch processing on permanent server`);
+      
+    } catch (localError: any) {
+      logger.error(`❌ LAZY PIN FALLBACK: Local pin also failed for ${hash}: ${localError.message}`);
+      logger.error(`💔 CONTENT LOST: ${hash} (${pin.size_mb.toFixed(1)}MB) - no remaining fallback options`);
+    }
+  }
+
+  /**
+   * 📝 Log locally pinned content to database file for batch processing
+   */
+  private async logLocalFallbackPin(hash: string, pin: PendingPin): Promise<void> {
+    try {
+      const logDir = this.filePath.substring(0, this.filePath.lastIndexOf('/'));
+      const logFile = join(logDir, 'local-fallback-pins.jsonl');
+      
+      const logEntry = {
+        hash,
+        job_id: pin.job_id,
+        size_mb: pin.size_mb,
+        type: pin.type,
+        failed_lazy_attempts: pin.attempts,
+        local_pin_timestamp: new Date().toISOString(),
+        source: 'failed_lazy_pin_fallback',
+        node_id: process.env.NODE_NAME || 'unknown'
+      };
+      
+      const logLine = JSON.stringify(logEntry) + '\n';
+      await fs.appendFile(logFile, logLine, 'utf8');
+      
+      logger.info(`📝 BATCH DATABASE: Logged ${hash} to local-fallback-pins.jsonl for batch processing`);
+      
+    } catch (error: any) {
+      logger.error(`❌ Failed to log local fallback pin: ${error.message}`);
+    }
   }
 }

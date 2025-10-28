@@ -56,6 +56,13 @@ export class IPFSService {
   }
 
   /**
+   * Get the IPFS client instance for external use
+   */
+  getClient(): any {
+    return this.client;
+  }
+
+  /**
    * 🛡️ TANK MODE: Check IPFS node health before operations
    */
   private async checkIPFSHealth(): Promise<void> {
