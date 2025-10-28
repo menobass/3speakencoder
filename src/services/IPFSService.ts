@@ -316,24 +316,39 @@ export class IPFSService {
         
         const result = await this.performDirectoryUpload(dirPath);
         
-        // 🛡️ TANK MODE: Bulletproof pin with verification
-        logger.info(`🛡️ TANK MODE: Ensuring ${result} is bulletproof pinned...`);
-        
-        try {
-          await this.pinAndAnnounce(result);
-          logger.info(`🎯 Directory upload complete and verified: ${result}`);
-        } catch (pinError: any) {
-          // 🚨 FALLBACK: If pinning fails, still return the hash since content is uploaded
-          logger.warn(`⚠️ Pinning failed for ${result}, but content is uploaded: ${pinError.message}`);
-          logger.warn(`🚨 Job will complete without pinning to prevent stuck jobs`);
+        // � PINATA-STYLE: Only pin if explicitly requested
+        if (pin) {
+          // �🛡️ TANK MODE: Bulletproof pin with verification  
+          logger.info(`🛡️ TANK MODE: Ensuring ${result} is bulletproof pinned...`);
           
-          // 🔄 LAZY PINNING: Queue for background retry
-          if (onPinFailed) {
-            onPinFailed(result, pinError);
-            logger.info(`📋 Queued ${result} for lazy pinning retry`);
+          try {
+            await this.pinAndAnnounce(result);
+            logger.info(`🎯 Directory upload complete and verified: ${result}`);
+          } catch (pinError: any) {
+            // 🚨 FALLBACK: If pinning fails, still return the hash since content is uploaded
+            logger.warn(`⚠️ Pinning failed for ${result}, but content is uploaded: ${pinError.message}`);
+            logger.warn(`🚨 Job will complete without pinning to prevent stuck jobs`);
+            
+            // 🔄 LAZY PINNING: Queue for background retry
+            if (onPinFailed) {
+              onPinFailed(result, pinError);
+              logger.info(`📋 Queued ${result} for lazy pinning retry`);
+            }
+            
+            logger.info(`📤 Directory upload complete (no pinning): ${result}`);
           }
+        } else {
+          // 🚀 PINATA-STYLE: Just return CID immediately, no pinning
+          logger.info(`🚀 PINATA-STYLE: Upload complete, returning CID immediately: ${result}`);
+          logger.info(`🔄 Pinning will be handled by lazy pinning service in background`);
           
-          logger.info(`📤 Directory upload complete (no pinning): ${result}`);
+          // 🔄 LAZY PINNING: Queue for background pinning
+          if (onPinFailed) {
+            setTimeout(() => {
+              logger.info(`🔄 Triggering lazy pinning for ${result}`);
+              onPinFailed(result, new Error('lazy_pin_requested'));
+            }, 100);
+          }
         }
         
         return result;

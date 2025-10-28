@@ -207,7 +207,20 @@ export class VideoProcessor {
       
       // Upload ONLY the encoded outputs directory to IPFS (no source file!)
       logger.info(`📤 Uploading encoded outputs to IPFS for job ${jobId} (source file excluded)`);
-      const ipfsHash = await this.ipfsService.uploadDirectory(outputsDir, true, onPinFailed);
+      
+      // 🚨 PINATA-STYLE: Upload and get CID immediately, handle pinning in background
+      const ipfsHash = await this.ipfsService.uploadDirectory(outputsDir, false, onPinFailed);
+      logger.info(`✅ Got IPFS CID immediately: ${ipfsHash}`);
+      
+      // 🔄 LAZY PINNING: Queue for background pinning (non-blocking)
+      if (onPinFailed) {
+        // Trigger background pinning by calling the callback with no error
+        setTimeout(() => {
+          logger.info(`🔄 Triggering lazy pinning for ${ipfsHash}`);
+          // This will queue it for background pinning
+          onPinFailed(ipfsHash, new Error('lazy_pin_requested'));
+        }, 100);
+      }
       
       // Create final outputs with master playlist
       const masterPlaylistUri = `ipfs://${ipfsHash}/manifest.m3u8`;
