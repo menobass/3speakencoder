@@ -565,152 +565,149 @@ export class IPFSService {
   }
 
   /**
-   * 🛡️ TANK MODE: Bulletproof pinning with verification and retries
-   * This function WILL NOT return until content is verified pinned or max retries exhausted
+   * � BULLETPROOF: Pinning that NEVER blocks job completion
+   * Jobs MUST complete regardless of pinning status
    */
   private async pinAndAnnounce(hash: string): Promise<void> {
+    try {
+      // 🚨 CRITICAL: Use bulletproof timeout that CANNOT be bypassed
+      await this.attemptPinWithBulletproofTimeout(hash);
+      logger.info(`✅ Pinning completed successfully for ${hash}`);
+    } catch (error: any) {
+      // 🚨 NEVER let pinning failures block job completion
+      logger.warn(`⚠️ Pinning failed for ${hash}, but job will continue:`, error.message);
+      logger.warn(`📋 Content is uploaded and accessible - pinning can be retried later`);
+      
+      // Log for manual retry if needed
+      this.logFailedPin(hash, error.message);
+    }
+  }
+
+  /**
+   * 🚨 BULLETPROOF TIMEOUT: Pinning with multiple timeout layers
+   */
+  private async attemptPinWithBulletproofTimeout(hash: string): Promise<void> {
     const threeSpeakIPFS = this.config.ipfs?.threespeak_endpoint || 'http://65.21.201.94:5002';
     const axios = await import('axios');
-    const maxRetries = 5; // More retries for pin operations
-    const baseDelay = 2000; // Start with 2 second delay
     const localFallbackEnabled = this.config.ipfs?.enable_local_fallback || false;
-    const fallbackThreshold = this.config.ipfs?.local_fallback_threshold || 3;
     
-    logger.info(`🛡️ TANK MODE: Initiating bulletproof pin for ${hash}`);
+    // 🚨 BULLETPROOF: Multiple timeout layers
+    const HARD_TIMEOUT = 120000; // 2 minutes - absolute maximum
+    const SOFT_TIMEOUT = 60000;  // 1 minute - preferred timeout
     
-    if (localFallbackEnabled) {
-      logger.info(`🏠 Local fallback enabled (threshold: ${fallbackThreshold} attempts)`);
-    }
-
-    // Step 1: Pin with retry logic
-    let remotePinSucceeded = false;
-    let lastRemoteError: any = null;
+    logger.info(`🛡️ Starting bulletproof pin for ${hash} (max ${HARD_TIMEOUT/1000}s)`);
     
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        logger.info(`📌 Remote pin attempt ${attempt}/${maxRetries}: ${hash}`);
-        
-        // Pin with recursive flag and more aggressive timeout
-        const pinTimeout = 60000; // 1 minute timeout (reduced from 2 minutes)
-        logger.info(`📌 Pin timeout set to ${pinTimeout/1000}s for hash ${hash}`);
-        
-        await axios.default.post(
-          `${threeSpeakIPFS}/api/v0/pin/add?arg=${hash}&recursive=true&progress=true`,
-          null,
-          { 
-            timeout: pinTimeout,
-            maxContentLength: 10 * 1024 * 1024, // 10MB response limit
-            maxBodyLength: 1024 * 1024 // 1MB request limit
-          }
-        );
-        
-        logger.info(`✅ Remote pin command succeeded for ${hash}`);
-        remotePinSucceeded = true;
-        break; // Success, exit retry loop
-        
-      } catch (error: any) {
-        lastRemoteError = error;
-        const isLastAttempt = attempt === maxRetries;
-        const shouldTryFallback = localFallbackEnabled && attempt >= fallbackThreshold;
-        
-        if (shouldTryFallback && !isLastAttempt) {
-          logger.warn(`⚠️ Remote pin attempt ${attempt} failed, will try local fallback:`, error.message);
-          // Don't break yet, let it try one more remote attempt first
-        } else if (isLastAttempt) {
-          logger.error(`❌ Remote pin failed after ${maxRetries} attempts for ${hash}:`, error.message);
-          
-          if (localFallbackEnabled) {
-            logger.info(`🏠 Attempting local fallback pin for ${hash}`);
-            break; // Exit retry loop to try local fallback
-          } else {
-            throw new Error(`CRITICAL: Pin failed after ${maxRetries} attempts - ${error.message}`);
-          }
-        } else {
-          const delay = Math.min(baseDelay * Math.pow(2, attempt - 1), 30000); // Max 30s
-          logger.warn(`⚠️ Pin attempt ${attempt} failed, retrying in ${delay}ms:`, error.message);
-          await new Promise(resolve => setTimeout(resolve, delay));
+    // Create a promise that WILL resolve within the hard timeout no matter what
+    const bulletproofPromise = new Promise<void>((resolve, reject) => {
+      let isResolved = false;
+      
+      // HARD TIMEOUT - this WILL fire no matter what happens
+      const hardTimeout = setTimeout(() => {
+        if (!isResolved) {
+          isResolved = true;
+          logger.warn(`� HARD TIMEOUT: Pinning took longer than ${HARD_TIMEOUT/1000}s for ${hash}`);
+          reject(new Error(`Pinning hard timeout after ${HARD_TIMEOUT/1000}s`));
         }
-      }
-    }
-
-    // Step 1.5: Try local fallback if remote failed and fallback is enabled
-    let localPinSucceeded = false;
-    if (!remotePinSucceeded && localFallbackEnabled) {
-      try {
-        logger.info(`🏠 Remote pin failed, attempting local fallback for ${hash}`);
-        await this.client.pin.add(hash);
-        localPinSucceeded = true;
-        logger.info(`✅ Local fallback pin succeeded for ${hash}`);
-        
-        // Log this for future sync service processing
-        await this.logLocalPin(hash);
-        
-      } catch (localError: any) {
-        logger.error(`❌ Local fallback pin also failed for ${hash}:`, localError.message);
-        throw new Error(`CRITICAL: Both remote and local pin failed for ${hash} - Remote: ${lastRemoteError?.message}, Local: ${localError.message}`);
-      }
-    }
-
-    // Ensure at least one pin method succeeded
-    if (!remotePinSucceeded && !localPinSucceeded) {
-      throw new Error(`CRITICAL: No pin method succeeded for ${hash}`);
-    }
-
-    // Step 2: VERIFY the pin status
-    const pinLocation = remotePinSucceeded ? 'remote' : 'local';
-    logger.info(`🔍 Verifying ${pinLocation} pin status for ${hash}`);
-    
-    let pinVerified = false;
-    if (remotePinSucceeded) {
-      pinVerified = await this.verifyPinStatus(hash, threeSpeakIPFS);
-    } else if (localPinSucceeded) {
-      pinVerified = await this.verifyLocalPinStatus(hash);
-    }
-    
-    if (!pinVerified) {
-      throw new Error(`CRITICAL: ${pinLocation} pin verification failed for ${hash} - content may not be persisted!`);
-    }
-    
-    logger.info(`✅ ${pinLocation} pin verified successfully: ${hash}`);
-
-    // Step 3: Announce to DHT (best effort, don't fail if this fails)
-    if (remotePinSucceeded) {
-      // For remote pins, announce via the supernode  
-      try {
-        logger.info(`📢 Starting remote DHT announcement for ${hash}...`);
-        const dhtTimeout = 30000; // Reduced to 30 seconds
-        
-        await axios.default.post(
-          `${threeSpeakIPFS}/api/v0/dht/provide?arg=${hash}`,
-          null,
-          { 
-            timeout: dhtTimeout,
-            maxContentLength: 1024 * 1024, // 1MB response limit
+      }, HARD_TIMEOUT);
+      
+      // Try remote pinning first
+      const tryRemotePin = async () => {
+        try {
+          logger.info(`📌 Attempting remote pin: ${hash}`);
+          
+          await axios.default.post(
+            `${threeSpeakIPFS}/api/v0/pin/add?arg=${hash}&recursive=true&progress=true`,
+            null,
+            { 
+              timeout: SOFT_TIMEOUT,
+              maxContentLength: 10 * 1024 * 1024,
+              maxBodyLength: 1024 * 1024
+            }
+          );
+          
+          if (!isResolved) {
+            isResolved = true;
+            clearTimeout(hardTimeout);
+            logger.info(`✅ Remote pin succeeded: ${hash}`);
+            resolve();
           }
-        );
-        logger.info(`✅ Remote DHT announcement completed for ${hash}`);
-      } catch (error: any) {
-        // DHT announce is nice-to-have, not critical
-        logger.warn(`⚠️ Remote DHT announcement failed (non-critical) for ${hash}: ${error.message}`);
-      }
-    } else if (localPinSucceeded) {
-      // For local pins, announce via local node
-      try {
-        logger.info(`📢 Starting local DHT announcement for ${hash}...`);
-        await this.client.dht.provide(hash);
-        logger.info(`✅ Local DHT announcement completed for ${hash}`);
-      } catch (error: any) {
-        // DHT announce is nice-to-have, not critical
-        logger.warn(`⚠️ Local DHT announcement failed (non-critical) for ${hash}: ${error.message}`);
-      }
-    }
+          
+        } catch (remoteError: any) {
+          logger.warn(`⚠️ Remote pin failed: ${remoteError.message}`);
+          
+          // Try local fallback if enabled and not already resolved
+          if (localFallbackEnabled && !isResolved) {
+            try {
+              logger.info(`🏠 Trying local fallback pin: ${hash}`);
+              await this.client.pin.add(hash);
+              
+              if (!isResolved) {
+                isResolved = true;
+                clearTimeout(hardTimeout);
+                logger.info(`✅ Local fallback pin succeeded: ${hash}`);
+                await this.logLocalPin(hash);
+                resolve();
+              }
+              
+            } catch (localError: any) {
+              if (!isResolved) {
+                isResolved = true;
+                clearTimeout(hardTimeout);
+                logger.error(`❌ Both remote and local pin failed: ${hash}`);
+                reject(new Error(`All pin methods failed - Remote: ${remoteError.message}, Local: ${localError.message}`));
+              }
+            }
+          } else {
+            // No fallback available or already resolved
+            if (!isResolved) {
+              isResolved = true;
+              clearTimeout(hardTimeout);
+              reject(remoteError);
+            }
+          }
+        }
+      };
+      
+      // Start the pinning attempt
+      tryRemotePin().catch(error => {
+        if (!isResolved) {
+          isResolved = true;
+          clearTimeout(hardTimeout);
+          reject(error);
+        }
+      });
+    });
     
-    // Log summary of what happened
-    if (localPinSucceeded && !remotePinSucceeded) {
-      logger.warn(`🏠 FALLBACK USED: Content ${hash} pinned locally due to remote failures. Sync service should eventually migrate this to supernode.`);
+    // Execute with bulletproof timeout
+    return bulletproofPromise;
+  }
+
+  /**
+   * Log failed pins for manual retry
+   */
+  private async logFailedPin(hash: string, errorMessage: string): Promise<void> {
+    try {
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      
+      const logDir = path.join(process.cwd(), 'logs');
+      await fs.mkdir(logDir, { recursive: true });
+      
+      const logEntry = {
+        hash,
+        timestamp: new Date().toISOString(),
+        type: 'failed_pin',
+        error: errorMessage,
+        node_id: this.peerId || 'unknown'
+      };
+      
+      const logFile = path.join(logDir, 'failed-pins.jsonl');
+      await fs.appendFile(logFile, JSON.stringify(logEntry) + '\n');
+      
+      logger.info(`� Logged failed pin for manual retry: ${hash}`);
+    } catch (error: any) {
+      logger.debug(`Could not log failed pin: ${error.message}`);
     }
-    
-    logger.info(`🎯 TANK MODE: ${hash} is fully pinned, verified, and announced!`);
   }
 
   /**
