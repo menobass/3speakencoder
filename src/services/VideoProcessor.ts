@@ -149,12 +149,14 @@ export class VideoProcessor {
   ): Promise<EncodedOutput[]> {
     const jobId = job.id;
     const workDir = join(this.tempDir, jobId);
+    const outputsDir = join(workDir, 'outputs'); // Separate directory for encoded outputs only
     
     try {
-      // Create work directory
+      // Create work and outputs directories
       await fs.mkdir(workDir, { recursive: true });
+      await fs.mkdir(outputsDir, { recursive: true });
       
-      // Download source video
+      // Download source video (temporary, will be deleted after encoding)
       const sourceFile = join(workDir, 'source.mp4');
       logger.info(`📥 Downloading source video for job ${jobId}`);
       await this.downloadVideo(job.input.uri, sourceFile);
@@ -174,7 +176,7 @@ export class VideoProcessor {
         const output = await this.encodeProfile(
           sourceFile,
           profile,
-          workDir,
+          outputsDir, // Encode directly to outputs directory
           (progress) => {
             if (progressCallback) {
               const totalProgress = ((i / profiles.length) + (progress / 100 / profiles.length)) * 100;
@@ -192,22 +194,30 @@ export class VideoProcessor {
       
       logger.info(`🎉 All profiles completed for job ${jobId}`);
       
-      // Create master playlist (manifest.m3u8) that references all profiles
-      await this.createMasterPlaylist(outputs, workDir);
+      // 🗑️ Delete source file immediately after encoding (no longer needed)
+      try {
+        await fs.unlink(sourceFile);
+        logger.info(`🗑️ Source file deleted: ${sourceFile}`);
+      } catch (error) {
+        logger.warn(`⚠️ Failed to delete source file:`, error);
+      }
       
-      // Upload the entire HLS structure to IPFS as a single directory
-      logger.info(`📤 Uploading complete HLS structure to IPFS for job ${jobId}`);
-      const ipfsHash = await this.ipfsService.uploadDirectory(workDir, true, onPinFailed);
+      // Create master playlist (manifest.m3u8) that references all profiles
+      await this.createMasterPlaylist(outputs, outputsDir);
+      
+      // Upload ONLY the encoded outputs directory to IPFS (no source file!)
+      logger.info(`📤 Uploading encoded outputs to IPFS for job ${jobId} (source file excluded)`);
+      const ipfsHash = await this.ipfsService.uploadDirectory(outputsDir, true, onPinFailed);
       
       // Create final outputs with master playlist
       const masterPlaylistUri = `ipfs://${ipfsHash}/manifest.m3u8`;
       const uploadedOutputs: EncodedOutput[] = [{
         profile: 'master',
-        path: join(workDir, 'manifest.m3u8'),
+        path: join(outputsDir, 'manifest.m3u8'),
         size: 0, // Will be calculated
         duration: 0,
         segments: [],
-        playlist: join(workDir, 'manifest.m3u8'),
+        playlist: join(outputsDir, 'manifest.m3u8'),
         ipfsHash: ipfsHash,
         uri: masterPlaylistUri
       }];
