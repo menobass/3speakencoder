@@ -347,7 +347,9 @@ export class IPFSService {
         } else {
           // 🚀 PINATA-STYLE: Just return CID immediately, no pinning
           logger.info(`🚀 PINATA-STYLE: Upload complete, returning CID immediately: ${result}`);
-          logger.info(`🔄 Pinning will be handled by lazy pinning service in background`);
+          logger.info(`� 🎯 MANUAL CID: ${result} - Content accessible right now!`);
+          logger.info(`🔍 Verify access: https://gateway.3speak.tv/ipfs/${result}/manifest.m3u8`);
+          logger.info(`�🔄 Pinning will be handled by lazy pinning service in background`);
           
           // 🔄 LAZY PINNING: Queue for background pinning
           if (onPinFailed) {

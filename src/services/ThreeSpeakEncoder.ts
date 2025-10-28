@@ -611,9 +611,12 @@ export class ThreeSpeakEncoder {
       
       // 🛡️ TANK MODE: Final verification before reporting to gateway
       logger.info(`🛡️ TANK MODE: Final persistence verification before gateway notification`);
+      logger.info(`🔍 DEBUG: About to verify persistence for CID: ${masterOutput.ipfsHash}`);
       
       try {
+        logger.info(`🔍 DEBUG: Starting verifyContentPersistence...`);
         const isContentPersisted = await this.ipfs.verifyContentPersistence(masterOutput.ipfsHash);
+        logger.info(`🔍 DEBUG: Verification result: ${isContentPersisted}`);
         
         if (!isContentPersisted) {
           // 🛡️ FALLBACK: Try a simpler verification (just pin status)
@@ -644,13 +647,17 @@ export class ThreeSpeakEncoder {
         // 🚨 Last resort: If verification completely fails, log but don't fail the job
         // (Content was uploaded successfully, verification might be having issues)
         logger.error(`❌ Verification failed: ${verifyError.message}`);
+        logger.error(`🔍 DEBUG: Verification error details:`, verifyError);
         logger.warn(`🆘 PROCEEDING ANYWAY - Content was uploaded successfully, verification may have issues`);
         logger.warn(`🔍 Manual check recommended for hash: ${masterOutput.ipfsHash}`);
       }
+      logger.info(`🔍 DEBUG: Verification phase complete, proceeding to gateway notification...`);
       logger.info(`📋 Sending result to gateway: ${JSON.stringify(gatewayResult)}`);
       
       // Complete the job with gateway
+      logger.info(`🔍 DEBUG: About to call gateway.finishJob for ${jobId}...`);
       const finishResponse = await this.gateway.finishJob(jobId, gatewayResult);
+      logger.info(`🔍 DEBUG: Gateway finishJob response received:`, finishResponse);
       
       // 🚨 FIX: Always clear cached result to prevent memory leak
       this.jobQueue.clearCachedResult(jobId);
