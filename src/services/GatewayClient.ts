@@ -14,10 +14,13 @@ export class GatewayClient {
   constructor(config: EncoderConfig) {
     this.config = config;
     this.apiUrl = config.remote_gateway.api;
-    
+  const rg = (config.remote_gateway as any) || {};
+  const defaultTimeout = rg.timeoutMs || 120000; // default 120s
+  const maxContent = rg.maxContentLength || 50 * 1024 * 1024;
+
     this.client = axios.create({
       baseURL: this.apiUrl,
-      timeout: 30000,
+      timeout: defaultTimeout,
       headers: {
         'Content-Type': 'application/json',
         'User-Agent': '3Speak-Encoder-Modern/1.0.0'
@@ -45,6 +48,56 @@ export class GatewayClient {
     );
   }
 
+  /**
+   * Simple GET wrapper with retries and exponential backoff for transient network/gateway issues.
+   */
+  private async getWithRetries<T = any>(path: string, opts: any = {}): Promise<T> {
+  const rg = (this.config.remote_gateway as any) || {};
+  const maxRetries = rg.retries || 3;
+  const baseDelay = rg.retryBaseDelayMs || 1000;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await this.client.get<T>(path, opts);
+        return response.data;
+      } catch (err: any) {
+        const isLast = attempt === maxRetries;
+        const shouldRetry = !err.response || (err.response && err.response.status >= 500) || err.code === 'ECONNABORTED' || err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED';
+        if (!shouldRetry || isLast) throw err;
+
+        const delay = baseDelay * Math.pow(2, attempt - 1);
+        logger.warn(`⚠️ GET ${path} failed (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms:`, err.message || err.code);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+    throw new Error('Unreachable');
+  }
+
+  /**
+   * Simple POST wrapper with retries and exponential backoff for transient network/gateway issues.
+   */
+  private async postWithRetries<T = any>(path: string, payload: any, opts: any = {}): Promise<T> {
+  const rg = (this.config.remote_gateway as any) || {};
+  const maxRetries = rg.retries || 3;
+  const baseDelay = rg.retryBaseDelayMs || 1000;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await this.client.post<T>(path, payload, opts);
+        return response.data;
+      } catch (err: any) {
+        const isLast = attempt === maxRetries;
+        const shouldRetry = !err.response || (err.response && err.response.status >= 500) || err.code === 'ECONNABORTED' || err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED';
+        if (!shouldRetry || isLast) throw err;
+
+        const delay = baseDelay * Math.pow(2, attempt - 1);
+        logger.warn(`⚠️ POST ${path} failed (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms:`, err.message || err.code);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+    throw new Error('Unreachable');
+  }
+
   async initialize(): Promise<void> {
     // Test gateway connectivity with retry logic
     const maxRetries = 3;
@@ -53,13 +106,13 @@ export class GatewayClient {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         logger.info(`🔍 Testing gateway connection (attempt ${attempt}/${maxRetries})...`);
-        await this.client.get('/api/v0/gateway/stats', { timeout: 10000 });
+        await this.getWithRetries('/api/v0/gateway/stats', { timeout: 10000 });
         logger.info('🌐 Gateway connection verified');
         return;
       } catch (error) {
         lastError = error;
         logger.warn(`⚠️ Gateway connection attempt ${attempt} failed:`, cleanErrorForLogging(error));
-        
+
         if (attempt < maxRetries) {
           const delay = 2000 * attempt; // 2s, 4s, 6s
           logger.info(`⏱️ Retrying gateway connection in ${delay}ms...`);
@@ -85,14 +138,7 @@ export class GatewayClient {
     try {
       const jws = await this.identity.createJWS({ node_info: nodeInfo });
       
-      const response = await this.client.post('/api/v0/gateway/updateNode', {
-        jws
-      });
-
-      if (response.status !== 201 && response.status !== 200) {
-        throw new Error(`Node registration failed with status ${response.status}: ${response.data}`);
-      }
-
+      await this.postWithRetries('/api/v0/gateway/updateNode', { jws });
       logger.info('📡 Node registered successfully');
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -108,12 +154,12 @@ export class GatewayClient {
   async getJob(): Promise<VideoJob | null> {
     try {
       const response = await this.client.get<VideoJob>('/api/v0/gateway/getJob', { timeout: 15000 });
-      
+
       if (response.data) {
         logger.debug('📋 Gateway job retrieved successfully');
         return response.data;
       }
-      
+
       return null;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -142,9 +188,7 @@ export class GatewayClient {
     const jws = await this.identity.createJWS({ job_id: jobId });
 
     try {
-      await this.client.post('/api/v0/gateway/acceptJob', {
-        jws
-      });
+      await this.postWithRetries('/api/v0/gateway/acceptJob', { jws });
       logger.debug(`✅ Successfully accepted job: ${jobId}`);
     } catch (error) {
       // Handle "job already accepted by another encoder" scenario
@@ -177,9 +221,7 @@ export class GatewayClient {
 
     const jws = await this.identity.createJWS({ job_id: jobId });
     
-    await this.client.post('/api/v0/gateway/rejectJob', {
-      jws
-    });
+    await this.postWithRetries('/api/v0/gateway/rejectJob', { jws });
   }
 
   async failJob(jobId: string, errorDetails: any): Promise<void> {
@@ -197,10 +239,8 @@ export class GatewayClient {
       };
       
       const jws = await this.identity.createJWS(payload);
-      
-      await this.client.post('/api/v0/gateway/failJob', {
-        jws
-      });
+
+      await this.postWithRetries('/api/v0/gateway/failJob', { jws });
       
     } catch (error: any) {
       // 🚨 DST/Gateway Fix: Don't fail the encoder if gateway reporting fails
@@ -236,11 +276,7 @@ export class GatewayClient {
     const jws = await this.identity.createJWS(payload);
 
     try {
-      const response = await this.client.post('/api/v0/gateway/finishJob', {
-        jws
-      });
-
-      return response.data;
+      return await this.postWithRetries('/api/v0/gateway/finishJob', { jws });
     } catch (error) {
       // Handle "job already completed by another encoder" scenario
       if (axios.isAxiosError(error)) {
@@ -305,10 +341,8 @@ export class GatewayClient {
     
     // Legacy expects progressPct + download_pct, NOT generic status
     const jws = await this.identity.createJWS(payload);
-    
-    await this.client.post('/api/v0/gateway/pingJob', {
-      jws
-    });
+
+    await this.postWithRetries('/api/v0/gateway/pingJob', { jws });
   }
 
   async cancelJob(jobId: string): Promise<void> {
@@ -317,20 +351,16 @@ export class GatewayClient {
     }
 
     const jws = await this.identity.createJWS({ job_id: jobId });
-    
-    await this.client.post('/api/v0/gateway/cancelJob', {
-      jws
-    });
+
+    await this.postWithRetries('/api/v0/gateway/cancelJob', { jws });
   }
 
   async getNodeStats(nodeId: string): Promise<any> {
-    const response = await this.client.get(`/api/v0/gateway/nodestats/${nodeId}`);
-    return response.data;
+    return await this.getWithRetries(`/api/v0/gateway/nodestats/${nodeId}`);
   }
 
   async getJobStatus(jobId: string): Promise<any> {
-    const response = await this.client.get(`/api/v0/gateway/jobstatus/${jobId}`);
-    return response.data;
+    return await this.getWithRetries(`/api/v0/gateway/jobstatus/${jobId}`);
   }
 
   /**
@@ -372,8 +402,7 @@ export class GatewayClient {
 
   async getGatewayStats(): Promise<any> {
     try {
-      const response = await this.client.get('/api/v0/gateway/stats', { timeout: 10000 });
-      return response.data;
+      return await this.getWithRetries('/api/v0/gateway/stats', { timeout: 10000 });
     } catch (error) {
       logger.debug('❌ Failed to get gateway stats:', error);
       return null;

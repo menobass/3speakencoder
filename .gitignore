@@ -143,3 +143,4 @@ admin-scripts/
 *.old
 docs/hardware-acceleration-fix.md
 docs/gateway-pinning-optimization.md
+docs/thor-analysis.md

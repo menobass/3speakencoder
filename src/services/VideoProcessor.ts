@@ -707,15 +707,60 @@ export class VideoProcessor {
       // Get profile-specific settings matching Eddie's script
       const profileSettings = this.getProfileSettings(profile.name);
       
-      const command = ffmpeg(sourceFile)
-        .videoCodec(bestCodec.name)
-        .addOption('-preset', 'veryfast')
+      // 🚀 HARDWARE ACCELERATION: Apply full hardware pipeline for maximum performance
+      let command = ffmpeg(sourceFile);
+      
+      // Configure hardware acceleration based on detected codec
+      if (bestCodec.name === 'h264_vaapi') {
+        // AMD/Intel VAAPI - Full hardware pipeline
+        command = command
+          .addInputOptions('-hwaccel', 'vaapi')
+          .addInputOptions('-vaapi_device', '/dev/dri/renderD128')  
+          .addInputOptions('-hwaccel_output_format', 'vaapi')
+          .videoCodec(bestCodec.name)
+          .addOption('-vf', `scale_vaapi=-2:${profile.height}:format=nv12`)  // Hardware scaling
+          .addOption('-qp', '19')  // Quality parameter for VAAPI
+          .addOption('-bf', '2');   // B-frames for efficiency
+      } else if (bestCodec.name === 'h264_nvenc') {
+        // NVIDIA NVENC - Full hardware pipeline  
+        command = command
+          .addInputOptions('-hwaccel', 'cuda')
+          .addInputOptions('-hwaccel_output_format', 'cuda')
+          .videoCodec(bestCodec.name)
+          .addOption('-vf', `scale_cuda=-2:${profile.height}`)  // Hardware scaling
+          .addOption('-preset', 'medium')
+          .addOption('-cq', '19')   // Constant quality for NVENC
+          .addOption('-b:v', profileSettings.bitrate)
+          .addOption('-maxrate', profileSettings.maxrate)
+          .addOption('-bufsize', profileSettings.bufsize);
+      } else if (bestCodec.name === 'h264_qsv') {
+        // Intel QuickSync - Full hardware pipeline
+        command = command
+          .addInputOptions('-hwaccel', 'qsv')
+          .addInputOptions('-hwaccel_output_format', 'qsv')
+          .videoCodec(bestCodec.name)
+          .addOption('-vf', `scale_qsv=-2:${profile.height}`)  // Hardware scaling
+          .addOption('-preset', 'medium')
+          .addOption('-global_quality', '19')  // Quality for QSV
+          .addOption('-b:v', profileSettings.bitrate)
+          .addOption('-maxrate', profileSettings.maxrate)
+          .addOption('-bufsize', profileSettings.bufsize);
+      } else {
+        // Software fallback - Standard CPU encoding
+        command = command
+          .videoCodec(bestCodec.name)
+          .addOption('-preset', 'medium')  // Better quality than veryfast
+          .addOption('-crf', '19')  // Constant rate factor for libx264
+          .addOption('-vf', `scale=-2:${profile.height},fps=30`)  // Software scaling
+          .addOption('-b:v', profileSettings.bitrate)
+          .addOption('-maxrate', profileSettings.maxrate)
+          .addOption('-bufsize', profileSettings.bufsize);
+      }
+      
+      // Common settings for all codecs
+      command = command
         .addOption('-profile:v', profileSettings.profile)
         .addOption('-level', profileSettings.level)
-        .addOption('-b:v', profileSettings.bitrate)
-        .addOption('-maxrate', profileSettings.maxrate)
-        .addOption('-bufsize', profileSettings.bufsize)
-        .addOption('-vf', `scale=-2:${profile.height},fps=30`)
         .audioCodec('aac')
         .audioBitrate(profileSettings.audioBitrate)
         .addOption('-ac', '2')
@@ -768,18 +813,6 @@ export class VideoProcessor {
           }
           reject(error);
         });
-
-      // Add codec-specific options
-      if (bestCodec.name === 'h264_qsv') {
-        command.addOption('-preset', 'medium');
-        command.addOption('-global_quality', '23');
-      } else if (bestCodec.name === 'h264_nvenc') {
-        command.addOption('-preset', 'medium');
-        command.addOption('-cq', '23');
-      } else {
-        command.addOption('-preset', 'medium');
-        command.addOption('-crf', '23');
-      }
 
       // 🚨 MEMORY SAFE: Add timeout to prevent hung FFmpeg processes
       const timeoutId = setTimeout(() => {
