@@ -556,6 +556,31 @@ export class ThreeSpeakEncoder {
       await this.gateway.acceptJob(jobId);
       logger.info(`✅ Accepted gateway job: ${jobId}`);
 
+      // 🔒 CRITICAL OWNERSHIP VALIDATION: Verify we actually own the job after accepting
+      const ourDID = this.identity.getDIDKey();
+      let jobStatus: any;
+      
+      try {
+        jobStatus = await this.gateway.getJobStatus(jobId);
+        logger.info(`🔍 Job ${jobId} status after accept: assigned_to=${jobStatus.assigned_to || 'null'}, status=${jobStatus.status || 'unknown'}`);
+        
+        if (!jobStatus.assigned_to || jobStatus.assigned_to !== ourDID) {
+          const actualOwner = jobStatus.assigned_to || 'unassigned';
+          logger.error(`🚨 OWNERSHIP CONFLICT: Job ${jobId} is assigned to ${actualOwner}, but we are ${ourDID}`);
+          logger.error(`🚨 Another encoder claimed this job! Aborting processing to prevent duplicate work.`);
+          
+          // Don't throw here - we want to handle this gracefully
+          this.jobQueue.failJob(jobId, `Ownership conflict: job assigned to ${actualOwner}, not us (${ourDID})`, false);
+          return;
+        }
+        
+        logger.info(`✅ Confirmed ownership of job ${jobId} - we are the assigned encoder`);
+        
+      } catch (statusError) {
+        logger.error(`❌ Failed to verify job ownership for ${jobId}:`, statusError);
+        logger.warn(`⚠️ Proceeding with caution - unable to verify ownership`);
+      }
+
       // Update status to running using legacy-compatible format
       job.status = JobStatus.RUNNING;
       await this.gateway.pingJob(jobId, { 
@@ -755,6 +780,15 @@ export class ThreeSpeakEncoder {
       const job = await this.gateway.getJob();
       if (job) {
         logger.info(`📥 Received new gateway job: ${job.id}`);
+        
+        // 🔒 OWNERSHIP VALIDATION: Check if job is already assigned to someone else
+        const ourDID = this.identity.getDIDKey();
+        const jobWithAssignment = job as any;
+        if (jobWithAssignment.assigned_to && jobWithAssignment.assigned_to !== ourDID) {
+          logger.warn(`⚠️ Job ${job.id} is already assigned to ${jobWithAssignment.assigned_to}, not us (${ourDID}). Skipping.`);
+          return;
+        }
+        
         // Add gateway job to queue for processing (non-blocking)
         this.jobQueue.addGatewayJob(job);
         logger.info(`📝 Gateway job ${job.id} added to processing queue`);
@@ -813,6 +847,29 @@ export class ThreeSpeakEncoder {
       await this.gateway.acceptJob(jobId);
       this.activeJobs.set(jobId, job);
       logger.info(`✅ Accepted job: ${jobId}`);
+
+      // 🔒 CRITICAL OWNERSHIP VALIDATION: Verify we actually own the job after accepting
+      const ourDID = this.identity.getDIDKey();
+      
+      try {
+        const jobStatus = await this.gateway.getJobStatus(jobId);
+        logger.info(`🔍 Job ${jobId} status after accept: assigned_to=${jobStatus.assigned_to || 'null'}`);
+        
+        if (!jobStatus.assigned_to || jobStatus.assigned_to !== ourDID) {
+          const actualOwner = jobStatus.assigned_to || 'unassigned';
+          logger.error(`🚨 OWNERSHIP CONFLICT: Job ${jobId} is assigned to ${actualOwner}, but we are ${ourDID}`);
+          logger.error(`🚨 Another encoder claimed this job! Aborting processing.`);
+          throw new Error(`Ownership conflict: job assigned to ${actualOwner}, not us`);
+        }
+        
+        logger.info(`✅ Confirmed ownership of job ${jobId}`);
+        
+      } catch (statusError: any) {
+        if (statusError.message && statusError.message.includes('Ownership conflict')) {
+          throw statusError; // Re-throw ownership conflicts
+        }
+        logger.warn(`⚠️ Failed to verify job ownership for ${jobId}, proceeding with caution:`, statusError);
+      }
 
       // Update status to running using legacy-compatible format
       job.status = JobStatus.RUNNING;
