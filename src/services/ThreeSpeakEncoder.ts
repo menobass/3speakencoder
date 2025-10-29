@@ -552,11 +552,11 @@ export class ThreeSpeakEncoder {
     await this.updateDashboard();
     
     try {
-      // Accept the job with gateway
+      // Accept the job with gateway (atomic claim operation)
       await this.gateway.acceptJob(jobId);
       logger.info(`✅ Accepted gateway job: ${jobId}`);
 
-      // 🔒 CRITICAL OWNERSHIP VALIDATION: Verify we actually own the job after accepting
+      // 🔒 CRITICAL OWNERSHIP VALIDATION: Verify we successfully claimed the job
       const ourDID = this.identity.getDIDKey();
       let jobStatus: any;
       
@@ -564,21 +564,32 @@ export class ThreeSpeakEncoder {
         jobStatus = await this.gateway.getJobStatus(jobId);
         logger.info(`🔍 Job ${jobId} status after accept: assigned_to=${jobStatus.assigned_to || 'null'}, status=${jobStatus.status || 'unknown'}`);
         
-        if (!jobStatus.assigned_to || jobStatus.assigned_to !== ourDID) {
-          const actualOwner = jobStatus.assigned_to || 'unassigned';
-          logger.error(`🚨 OWNERSHIP CONFLICT: Job ${jobId} is assigned to ${actualOwner}, but we are ${ourDID}`);
-          logger.error(`🚨 Another encoder claimed this job! Aborting processing to prevent duplicate work.`);
+        // After acceptJob(), the job MUST be assigned to us
+        if (jobStatus.assigned_to !== ourDID) {
+          const actualOwner = jobStatus.assigned_to || 'unassigned/null';
           
-          // Don't throw here - we want to handle this gracefully
-          this.jobQueue.failJob(jobId, `Ownership conflict: job assigned to ${actualOwner}, not us (${ourDID})`, false);
+          if (!jobStatus.assigned_to) {
+            logger.error(`🚨 CLAIM FAILED: Job ${jobId} is still unassigned after acceptJob() - gateway may have rejected our claim`);
+          } else {
+            logger.error(`🚨 RACE CONDITION: Job ${jobId} is assigned to ${actualOwner}, but we called acceptJob() first`);
+            logger.error(`🚨 Another encoder won the race condition! This indicates high competition for jobs.`);
+          }
+          
+          // Gracefully handle the conflict without throwing
+          this.jobQueue.failJob(jobId, `Failed to claim job: assigned_to=${actualOwner}, expected=${ourDID}`, false);
           return;
         }
         
-        logger.info(`✅ Confirmed ownership of job ${jobId} - we are the assigned encoder`);
+        if (jobStatus.status !== 'assigned') {
+          logger.warn(`⚠️ Unexpected job status after accept: ${jobStatus.status} (expected 'assigned')`);
+        }
+        
+        logger.info(`✅ Successfully claimed job ${jobId} - confirmed ownership and proceeding with work`);
         
       } catch (statusError) {
         logger.error(`❌ Failed to verify job ownership for ${jobId}:`, statusError);
-        logger.warn(`⚠️ Proceeding with caution - unable to verify ownership`);
+        logger.warn(`⚠️ This could indicate gateway connectivity issues - proceeding with caution`);
+        // Continue processing since acceptJob() didn't throw an error
       }
 
       // Update status to running using legacy-compatible format
@@ -715,9 +726,19 @@ export class ThreeSpeakEncoder {
     } catch (error) {
       logger.error(`❌ Gateway job ${jobId} failed:`, cleanErrorForLogging(error));
       
-      // Determine if this is a retryable error
+      // Determine if this is a retryable error and handle race conditions
       const errorMessage = error instanceof Error ? error.message : String(error);
-      const isRetryable = this.isRetryableError(error);
+      let isRetryable = this.isRetryableError(error);
+      
+      // Special handling for acceptJob race conditions and server errors
+      if (errorMessage.includes('no longer available') || errorMessage.includes('already assigned')) {
+        logger.info(`🏃‍♂️ Race condition detected: Job ${jobId} was claimed by another encoder - this is normal`);
+        isRetryable = false; // Don't retry race conditions
+      } else if (errorMessage.includes('status code 500')) {
+        logger.warn(`🚨 Gateway server error (500) for job ${jobId} - this may be a temporary issue`);
+        logger.info(`🔄 This is likely a temporary gateway issue and should resolve automatically`);
+        isRetryable = true; // Retry server errors
+      }
       
       // Report failure to gateway (but don't let gateway reporting errors affect retry logic)
       try {
@@ -784,9 +805,17 @@ export class ThreeSpeakEncoder {
         // 🔒 OWNERSHIP VALIDATION: Check if job is already assigned to someone else
         const ourDID = this.identity.getDIDKey();
         const jobWithAssignment = job as any;
+        
         if (jobWithAssignment.assigned_to && jobWithAssignment.assigned_to !== ourDID) {
+          // Job is already assigned to a different encoder - skip it
           logger.warn(`⚠️ Job ${job.id} is already assigned to ${jobWithAssignment.assigned_to}, not us (${ourDID}). Skipping.`);
           return;
+        } else if (!jobWithAssignment.assigned_to) {
+          // Job is unassigned - this is what we want to claim
+          logger.info(`📋 Job ${job.id} is unassigned - will attempt to claim it`);
+        } else if (jobWithAssignment.assigned_to === ourDID) {
+          // Job is already assigned to us (resuming?)
+          logger.info(`📋 Job ${job.id} is already assigned to us - resuming work`);
         }
         
         // Add gateway job to queue for processing (non-blocking)
