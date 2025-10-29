@@ -210,45 +210,53 @@ export class VideoProcessor {
   }
 
   private async testCodec(codecName: string): Promise<boolean> {
-    return new Promise((resolve) => {
+    return new Promise(async (resolve) => {
       const testFile = join(this.tempDir, `test-${codecName}-${randomUUID()}.mp4`);
       
       logger.info(`🧪 Testing codec: ${codecName}`);
       
       let command: any;
       
-      // 🔧 Simplified hardware codec tests (basic validation)
+      // 🎯 SERVER-COMPATIBLE: Use /dev/zero instead of lavfi (works on all systems)
       if (codecName === 'h264_vaapi') {
-        // VAAPI basic test - just check if codec works
+        // VAAPI test - use /dev/zero with rawvideo format
         command = ffmpeg()
-          .input('testsrc=duration=0.2:size=320x240:rate=5')
-          .inputFormat('lavfi')
+          .input('/dev/zero')
+          .inputFormat('rawvideo')
+          .inputOptions(['-pix_fmt', 'yuv420p', '-s', '64x64', '-r', '1'])
           .videoCodec(codecName)
-          .addOption('-b:v', '500k')
-          .duration(0.2);
+          .addOption('-b:v', '100k')
+          .addOption('-frames:v', '1')
+          .addOption('-f', 'mp4');
       } else if (codecName === 'h264_nvenc') {
-        // NVENC basic test
+        // NVENC test - use /dev/zero with rawvideo format  
         command = ffmpeg()
-          .input('testsrc=duration=0.2:size=320x240:rate=5')
-          .inputFormat('lavfi')
+          .input('/dev/zero')
+          .inputFormat('rawvideo')
+          .inputOptions(['-pix_fmt', 'yuv420p', '-s', '64x64', '-r', '1'])
           .videoCodec(codecName)
           .addOption('-preset', 'fast')
-          .duration(0.2);
+          .addOption('-frames:v', '1')
+          .addOption('-f', 'mp4');
       } else if (codecName === 'h264_qsv') {
-        // Intel QuickSync basic test
+        // Intel QuickSync test - use /dev/zero with rawvideo format
         command = ffmpeg()
-          .input('testsrc=duration=0.2:size=320x240:rate=5')
-          .inputFormat('lavfi')
+          .input('/dev/zero')
+          .inputFormat('rawvideo')
+          .inputOptions(['-pix_fmt', 'yuv420p', '-s', '64x64', '-r', '1'])
           .videoCodec(codecName)
           .addOption('-preset', 'medium')
-          .duration(0.2);
+          .addOption('-frames:v', '1')
+          .addOption('-f', 'mp4');
       } else {
-        // Software codec test
+        // Software codec test - use /dev/zero with rawvideo format
         command = ffmpeg()
-          .input('testsrc=duration=0.1:size=320x240:rate=1')
-          .inputFormat('lavfi')
+          .input('/dev/zero')
+          .inputFormat('rawvideo')
+          .inputOptions(['-pix_fmt', 'yuv420p', '-s', '64x64', '-r', '1'])
           .videoCodec(codecName)
-          .duration(0.1);
+          .addOption('-frames:v', '1')
+          .addOption('-f', 'mp4');
       }
       
       command
@@ -259,11 +267,11 @@ export class VideoProcessor {
         .on('end', async () => {
           try {
             await fs.unlink(testFile);
-            logger.info(`✅ ${codecName} test passed - hardware acceleration working!`);
-            resolve(true);
           } catch {
-            resolve(true); // File might not exist, but codec worked
+            // File might not exist, that's fine
           }
+          logger.info(`✅ ${codecName} test passed - hardware acceleration working!`);
+          resolve(true);
         })
         .on('error', (err: any) => {
           logger.warn(`❌ ${codecName} test failed: ${err.message}`);
