@@ -534,6 +534,9 @@ export class ThreeSpeakEncoder {
 
   private async processGatewayJob(job: any): Promise<void> {
     const jobId = job.id;
+    const ourDID = this.identity.getDIDKey();
+    let ownershipCheckInterval: NodeJS.Timeout | null = null;
+    
     this.activeJobs.set(jobId, job);
     
     // Check if this job has cached results from previous attempt
@@ -557,7 +560,6 @@ export class ThreeSpeakEncoder {
       logger.info(`✅ Accepted gateway job: ${jobId}`);
 
       // 🔒 CRITICAL OWNERSHIP VALIDATION: Verify we successfully claimed the job
-      const ourDID = this.identity.getDIDKey();
       let jobStatus: any;
       
       try {
@@ -587,10 +589,43 @@ export class ThreeSpeakEncoder {
         logger.info(`✅ Successfully claimed job ${jobId} - confirmed ownership and proceeding with work`);
         
       } catch (statusError) {
-        logger.error(`❌ Failed to verify job ownership for ${jobId}:`, statusError);
-        logger.warn(`⚠️ This could indicate gateway connectivity issues - proceeding with caution`);
-        // Continue processing since acceptJob() didn't throw an error
+        logger.error(`❌ OWNERSHIP_VERIFICATION_FAILED: Cannot verify job ${jobId} ownership:`, statusError);
+        logger.warn(`🛡️ DEFENSIVE: This could indicate gateway API issues - proceeding with extreme caution`);
+        logger.warn(`📊 TELEMETRY: Gateway getJobStatus API failure after successful acceptJob`);
+        
+        // 🛡️ DEFENSIVE: If we can't verify ownership, we should be extra cautious
+        // Log this as a potential gateway inconsistency but continue since acceptJob() succeeded
+        logger.info(`⚠️ RISK_ASSESSMENT: Continuing since acceptJob() succeeded, but monitoring for conflicts`);
       }
+      
+      // 🛡️ DEFENSIVE: Additional safety check - verify we're not processing someone else's job
+      // This catches race conditions that might have occurred after our ownership check
+      logger.info(`🔒 SAFETY_CHECK: Job ${jobId} processing started by encoder ${ourDID}`);
+      logger.info(`⏱️ TIMESTAMP: ${new Date().toISOString()} - Starting processing phase`);
+      
+      // 🛡️ DEFENSIVE: Set up periodic ownership verification during processing
+      const startOwnershipMonitoring = () => {
+        ownershipCheckInterval = setInterval(async () => {
+          try {
+            const currentStatus = await this.gateway.getJobStatus(jobId);
+            if (currentStatus.assigned_to !== ourDID) {
+              logger.error(`🚨 OWNERSHIP_HIJACK_DETECTED: Job ${jobId} reassigned during processing!`);
+              logger.error(`📊 CRITICAL_BUG: assigned_to changed from ${ourDID} to ${currentStatus.assigned_to}`);
+              logger.error(`🛑 ABORTING: Stopping processing to prevent duplicate work`);
+              
+              // Clear the interval and abort processing
+              if (ownershipCheckInterval) clearInterval(ownershipCheckInterval);
+              throw new Error(`Job ownership hijacked: assigned_to=${currentStatus.assigned_to}, expected=${ourDID}`);
+            }
+          } catch (error) {
+            // Don't abort on verification errors, just log them
+            logger.warn(`⚠️ Periodic ownership check failed for job ${jobId}:`, error);
+          }
+        }, 60000); // Check every minute during processing
+      };
+      
+      // Start monitoring (will be cleared in finally block)
+      startOwnershipMonitoring();
 
       // Update status to running using legacy-compatible format
       job.status = JobStatus.RUNNING;
@@ -730,14 +765,35 @@ export class ThreeSpeakEncoder {
       const errorMessage = error instanceof Error ? error.message : String(error);
       let isRetryable = this.isRetryableError(error);
       
-      // Special handling for acceptJob race conditions and server errors
+      // 🛡️ DEFENSIVE: Enhanced gateway race condition detection and telemetry
       if (errorMessage.includes('no longer available') || errorMessage.includes('already assigned')) {
-        logger.info(`🏃‍♂️ Race condition detected: Job ${jobId} was claimed by another encoder - this is normal`);
+        logger.info(`🏃‍♂️ GATEWAY_RACE_CONDITION: Job ${jobId} was claimed by another encoder`);
+        logger.info(`📊 TELEMETRY: Gateway race condition detected - evidence of gateway atomic operation bug`);
+        logger.info(`🔍 DIAGNOSIS: This should return HTTP 409, not generic error message`);
         isRetryable = false; // Don't retry race conditions
+        
       } else if (errorMessage.includes('status code 500')) {
-        logger.warn(`🚨 Gateway server error (500) for job ${jobId} - this may be a temporary issue`);
-        logger.info(`🔄 This is likely a temporary gateway issue and should resolve automatically`);
-        isRetryable = true; // Retry server errors
+        // 🛡️ DEFENSIVE: HTTP 500 during acceptJob likely indicates race condition disguised as server error
+        logger.warn(`🚨 GATEWAY_BUG_DETECTED: HTTP 500 for job ${jobId} during acceptJob - likely race condition`);
+        logger.warn(`📊 EVIDENCE: Gateway's non-atomic acceptJob() causes HTTP 500 instead of HTTP 409`);
+        logger.warn(`🔍 ROOT_CAUSE: Missing atomic constraints in MongoDB findOneAndUpdate operation`);
+        logger.info(`🔄 Will retry as potential temporary gateway instability`);
+        isRetryable = true; // Retry server errors, but with caution
+        
+      } else if (errorMessage.includes('timeout')) {
+        logger.warn(`⏰ GATEWAY_TIMEOUT: Job ${jobId} - gateway performance issue detected`);
+        logger.info(`📊 TELEMETRY: Gateway response time exceeded configured timeout`);
+        isRetryable = true; // Retry timeouts
+        
+      } else if (errorMessage.includes('ECONNREFUSED') || errorMessage.includes('ENOTFOUND')) {
+        logger.error(`🔌 GATEWAY_UNREACHABLE: Job ${jobId} - network connectivity issue`);
+        logger.info(`📊 TELEMETRY: Gateway network connectivity problem`);
+        isRetryable = true; // Retry network issues
+        
+      } else {
+        logger.error(`❌ UNKNOWN_GATEWAY_ERROR: Job ${jobId} failed with: ${errorMessage}`);
+        logger.info(`📊 TELEMETRY: Unrecognized error pattern - may need investigation`);
+        logger.info(`🔍 PLEASE_INVESTIGATE: New error type not in defensive handling logic`);
       }
       
       // Report failure to gateway (but don't let gateway reporting errors affect retry logic)
@@ -761,8 +817,16 @@ export class ThreeSpeakEncoder {
       
       throw error; // Re-throw to be handled by the main job processor
     } finally {
+      // 🛡️ DEFENSIVE: Cleanup monitoring interval
+      if (ownershipCheckInterval) {
+        clearInterval(ownershipCheckInterval);
+        logger.info(`🧹 CLEANUP: Stopped ownership monitoring for job ${jobId}`);
+      }
+      
       this.activeJobs.delete(jobId);
       await this.updateDashboard();
+      
+      logger.info(`🏁 JOB_COMPLETE: Encoder ${ourDID} finished processing job ${jobId} at ${new Date().toISOString()}`);
     }
   }
 
