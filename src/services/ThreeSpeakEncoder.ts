@@ -772,6 +772,14 @@ export class ThreeSpeakEncoder {
         logger.info(`🔍 DIAGNOSIS: This should return HTTP 409, not generic error message`);
         isRetryable = false; // Don't retry race conditions
         
+      } else if (errorMessage.includes('status code 502')) {
+        // 🚨 CRITICAL: HTTP 502 Bad Gateway - service is completely down
+        logger.error(`💥 GATEWAY_COMPLETELY_DOWN: HTTP 502 for job ${jobId} - gateway service is offline`);
+        logger.error(`🔍 DIAGNOSIS: nginx cannot connect to gateway backend service`);
+        logger.error(`🛠️ REQUIRED_ACTION: Gateway admin must fix Docker/systemd service immediately`);
+        logger.error(`⚠️ IMPACT: All encoders cannot get jobs until gateway is restored`);
+        isRetryable = true; // Retry infrastructure failures
+        
       } else if (errorMessage.includes('status code 500')) {
         // 🛡️ DEFENSIVE: HTTP 500 during acceptJob likely indicates race condition disguised as server error
         logger.error(`🚨 GATEWAY_API_BUG: HTTP 500 for job ${jobId} during acceptJob - likely race condition disguised as server error`);
@@ -917,6 +925,14 @@ export class ThreeSpeakEncoder {
       // Increment failure count
       this.gatewayFailureCount++;
       const timeSinceLastSuccess = Date.now() - this.lastGatewaySuccess.getTime();
+      
+      // 🚨 Special handling for HTTP 502 (gateway completely down)
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes('status code 502')) {
+        logger.error(`💥 GATEWAY_SERVICE_DOWN: HTTP 502 Bad Gateway - backend service is offline`);
+        logger.error(`🔍 Root cause: nginx cannot connect to gateway Docker container/systemd service`);
+        logger.error(`⚠️ This requires immediate sysadmin intervention to restore service`);
+      }
       
       logger.warn(`⚠️ Gateway polling failed (${this.gatewayFailureCount}/${this.maxGatewayFailures}):`, error);
       
