@@ -141,3 +141,5 @@ admin-scripts/
 *.bak
 *.backup
 *.old
+docs/hardware-acceleration-fix.md
+docs/gateway-pinning-optimization.md

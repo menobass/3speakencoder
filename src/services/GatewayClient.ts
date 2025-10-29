@@ -225,11 +225,9 @@ export class GatewayClient {
       throw new Error('No IPFS CID found in result');
     }
 
-    // 🕐 DST FIX: Add timing info to help with time change issues
+    // 🎯 LEGACY-COMPATIBLE: Use exact payload format from legacy encoder
     const payload = {
       job_id: jobId,
-      timestamp: new Date().toISOString(),
-      encoder_time: Date.now(),
       output: {
         cid: cid
       }

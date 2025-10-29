@@ -61,6 +61,65 @@ export class VideoProcessor {
     });
   }
 
+  private async checkSystemCapabilities(): Promise<void> {
+    try {
+      // Check for VAAPI support
+      try {
+        const { access } = await import('fs/promises');
+        await access('/dev/dri/renderD128');
+        logger.info('✅ VAAPI device found: /dev/dri/renderD128');
+      } catch {
+        logger.debug('ℹ️ VAAPI device not found (/dev/dri/renderD128)');
+      }
+
+      // Check for NVIDIA GPU
+      try {
+        const { exec } = await import('child_process');
+        await new Promise<void>((resolve, reject) => {
+          exec('nvidia-smi', (error) => {
+            if (error) {
+              logger.debug('ℹ️ NVIDIA GPU not detected (nvidia-smi not available)');
+              reject();
+            } else {
+              logger.info('✅ NVIDIA GPU detected');
+              resolve();
+            }
+          });
+        });
+      } catch {
+        // nvidia-smi not available, that's fine
+      }
+
+      // Check user groups for hardware access
+      try {
+        const { exec } = await import('child_process');
+        const groups = await new Promise<string>((resolve, reject) => {
+          exec('groups', (error, stdout) => {
+            if (error) reject(error);
+            else resolve(stdout.trim());
+          });
+        });
+        
+        logger.info(`👤 User groups: ${groups}`);
+        
+        if (groups.includes('render')) {
+          logger.info('✅ User is in "render" group - VAAPI should work');
+        } else {
+          logger.warn('⚠️ User not in "render" group - VAAPI may not work');
+          logger.warn('💡 To fix: sudo usermod -a -G render $USER (then logout/login)');
+        }
+        
+        if (groups.includes('video')) {
+          logger.info('✅ User is in "video" group - hardware access available');
+        }
+      } catch (error) {
+        logger.debug('Could not check user groups:', error);
+      }
+    } catch (error) {
+      logger.warn('System capability check failed:', error);
+    }
+  }
+
   private async detectCodecs(): Promise<void> {
     const codecs: CodecCapability[] = [
       { name: 'libx264', type: 'software', available: false, tested: false, priority: 10 },
@@ -69,7 +128,11 @@ export class VideoProcessor {
       { name: 'h264_vaapi', type: 'hardware', available: false, tested: false, priority: 3 }
     ];
 
-    // Check which codecs are available
+    // 🔍 System hardware capability checks
+    logger.info('🔍 Checking system hardware capabilities...');
+    await this.checkSystemCapabilities();
+
+    // Check which codecs are available in FFmpeg
     const availableEncoders = await new Promise<any>((resolve, reject) => {
       ffmpeg.getAvailableEncoders((err, encoders) => {
         if (err) reject(err);
@@ -80,13 +143,17 @@ export class VideoProcessor {
     for (const codec of codecs) {
       if (availableEncoders[codec.name]) {
         codec.available = true;
+        logger.info(`📋 ${codec.name} is available in FFmpeg`);
         
-        // Test hardware codecs to ensure they actually work
+        // Test hardware codecs to ensure they actually work with the system
         if (codec.type === 'hardware') {
+          logger.info(`🧪 Testing hardware codec: ${codec.name}`);
           codec.tested = await this.testCodec(codec.name);
         } else {
           codec.tested = true; // Assume software codecs work
         }
+      } else {
+        logger.debug(`❌ ${codec.name} not available in FFmpeg build`);
       }
     }
 
@@ -95,13 +162,50 @@ export class VideoProcessor {
       .filter(c => c.available && c.tested)
       .sort((a, b) => a.priority - b.priority);
 
-    logger.info('🔍 Codec detection results:');
-    this.availableCodecs.forEach(codec => {
-      logger.info(`  ✅ ${codec.name} (${codec.type})`);
-    });
-
+    // 📊 Detailed codec detection results
+    logger.info('🔍 Codec Detection Summary:');
+    logger.info('═══════════════════════════════════════');
+    
+    const workingHardware = this.availableCodecs.filter(c => c.type === 'hardware');
+    const workingSoftware = this.availableCodecs.filter(c => c.type === 'software');
+    
+    if (workingHardware.length > 0) {
+      logger.info('🚀 Hardware Acceleration ENABLED:');
+      workingHardware.forEach(codec => {
+        logger.info(`  ✅ ${codec.name} (${codec.type}) - Priority ${codec.priority}`);
+      });
+    } else {
+      logger.warn('⚠️ No working hardware codecs found');
+    }
+    
+    if (workingSoftware.length > 0) {
+      logger.info('💻 Software Codecs Available:');
+      workingSoftware.forEach(codec => {
+        logger.info(`  ✅ ${codec.name} (${codec.type})`);
+      });
+    }
+    
+    // Show failed codecs for debugging
+    const failedCodecs = codecs.filter(c => c.available && !c.tested);
+    if (failedCodecs.length > 0) {
+      logger.warn('❌ Available but Failed Codecs:');
+      failedCodecs.forEach(codec => {
+        logger.warn(`  ❌ ${codec.name} (${codec.type}) - Available in FFmpeg but test failed`);
+      });
+    }
+    
+    logger.info('═══════════════════════════════════════');
+    
     if (this.availableCodecs.length === 0) {
       throw new Error('No working video codecs found');
+    }
+    
+    // Log the codec that will be used
+    const bestCodec = this.availableCodecs[0]!;
+    if (bestCodec.type === 'hardware') {
+      logger.info(`🎯 BEST CODEC: ${bestCodec.name} (Hardware acceleration ACTIVE!) 🚀`);
+    } else {
+      logger.info(`🎯 BEST CODEC: ${bestCodec.name} (Software encoding)`);
     }
   }
 
@@ -111,34 +215,102 @@ export class VideoProcessor {
       
       logger.info(`🧪 Testing codec: ${codecName}`);
       
-      const command = ffmpeg()
-        .input('testsrc=duration=0.1:size=320x240:rate=1')
-        .inputFormat('lavfi')
-        .videoCodec(codecName)
-        .duration(0.1)
+      let command: any;
+      
+      // 🔧 Simplified hardware codec tests (basic validation)
+      if (codecName === 'h264_vaapi') {
+        // VAAPI basic test - just check if codec works
+        command = ffmpeg()
+          .input('testsrc=duration=0.2:size=320x240:rate=5')
+          .inputFormat('lavfi')
+          .videoCodec(codecName)
+          .addOption('-b:v', '500k')
+          .duration(0.2);
+      } else if (codecName === 'h264_nvenc') {
+        // NVENC basic test
+        command = ffmpeg()
+          .input('testsrc=duration=0.2:size=320x240:rate=5')
+          .inputFormat('lavfi')
+          .videoCodec(codecName)
+          .addOption('-preset', 'fast')
+          .duration(0.2);
+      } else if (codecName === 'h264_qsv') {
+        // Intel QuickSync basic test
+        command = ffmpeg()
+          .input('testsrc=duration=0.2:size=320x240:rate=5')
+          .inputFormat('lavfi')
+          .videoCodec(codecName)
+          .addOption('-preset', 'medium')
+          .duration(0.2);
+      } else {
+        // Software codec test
+        command = ffmpeg()
+          .input('testsrc=duration=0.1:size=320x240:rate=1')
+          .inputFormat('lavfi')
+          .videoCodec(codecName)
+          .duration(0.1);
+      }
+      
+      command
         .output(testFile)
+        .on('start', (cmdLine: string) => {
+          logger.debug(`🔧 ${codecName} test command: ${cmdLine}`);
+        })
         .on('end', async () => {
           try {
             await fs.unlink(testFile);
-            logger.info(`✅ ${codecName} test passed`);
+            logger.info(`✅ ${codecName} test passed - hardware acceleration working!`);
             resolve(true);
           } catch {
             resolve(true); // File might not exist, but codec worked
           }
         })
-        .on('error', (err) => {
+        .on('error', (err: any) => {
           logger.warn(`❌ ${codecName} test failed: ${err.message}`);
+          
+          // 🔍 Detailed hardware codec troubleshooting
+          if (codecName.includes('vaapi')) {
+            if (err.message.includes('No such file') || err.message.includes('Cannot load')) {
+              logger.warn(`💡 VAAPI: Hardware device not accessible - check /dev/dri/renderD128 and 'render' group`);
+            } else if (err.message.includes('Function not implemented')) {
+              logger.warn(`💡 VAAPI: Driver doesn't support this codec - try updating graphics drivers`);
+            } else {
+              logger.warn(`💡 VAAPI: Hardware acceleration not available on this system`);
+            }
+          } else if (codecName.includes('nvenc')) {
+            logger.warn(`💡 NVENC: NVIDIA GPU or drivers not available`);
+          } else if (codecName.includes('qsv')) {
+            if (err.message.includes('unsupported')) {
+              logger.warn(`💡 Intel QSV: Hardware not supported or drivers missing`);
+            } else {
+              logger.warn(`💡 Intel QSV: QuickSync not available on this system`);
+            }
+          }
+          
+          logger.info(`ℹ️ Codec ${codecName} will fall back to software encoding`);;
+          
           resolve(false);
         });
 
-      // Set timeout for codec test
-      setTimeout(() => {
-        command.kill('SIGKILL');
-        logger.warn(`⏰ ${codecName} test timeout`);
+      // 🕐 Reasonable timeout for codec tests
+      const timeout = codecName.includes('264') && !codecName.includes('lib') ? 5000 : 3000;
+      const timeoutHandle = setTimeout(() => {
+        try {
+          command.kill('SIGKILL');
+        } catch (e) {
+          // Ignore kill errors
+        }
+        logger.warn(`⏰ ${codecName} test timeout after ${timeout/1000}s`);
         resolve(false);
-      }, 10000);
+      }, timeout);
 
-      command.run();
+      try {
+        command.run();
+      } catch (error) {
+        clearTimeout(timeoutHandle);
+        logger.warn(`❌ ${codecName} failed to start: ${error}`);
+        resolve(false);
+      }
     });
   }
 
