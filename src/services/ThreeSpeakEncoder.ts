@@ -774,11 +774,36 @@ export class ThreeSpeakEncoder {
         
       } else if (errorMessage.includes('status code 500')) {
         // 🛡️ DEFENSIVE: HTTP 500 during acceptJob likely indicates race condition disguised as server error
-        logger.warn(`🚨 GATEWAY_BUG_DETECTED: HTTP 500 for job ${jobId} during acceptJob - likely race condition`);
-        logger.warn(`📊 EVIDENCE: Gateway's non-atomic acceptJob() causes HTTP 500 instead of HTTP 409`);
-        logger.warn(`🔍 ROOT_CAUSE: Missing atomic constraints in MongoDB findOneAndUpdate operation`);
-        logger.info(`🔄 Will retry as potential temporary gateway instability`);
-        isRetryable = true; // Retry server errors, but with caution
+        logger.error(`🚨 GATEWAY_API_BUG: HTTP 500 for job ${jobId} during acceptJob - likely race condition disguised as server error`);
+        logger.error(`📊 CRITICAL_EVIDENCE: Gateway fails to communicate job ownership information`);
+        logger.error(`🔍 EXPECTED_BEHAVIOR: Should return HTTP 409 with message "Job already assigned to encoder_xyz"`);
+        logger.error(`🔍 ACTUAL_BEHAVIOR: Returns HTTP 500 with generic error, hiding ownership details`);
+        logger.error(`🔍 ROOT_CAUSE: Gateway acceptJob() API lacks proper conflict handling`);
+        logger.error(`💡 IMPACT: Forces encoders to guess job state instead of receiving clear ownership info`);
+        logger.error(`🛠️ REQUIRED_FIX: Gateway must return HTTP 409 + ownership details for assigned jobs`);
+        
+        // 🔍 FORENSIC: Try to get actual job status to prove this was a hidden race condition
+        try {
+          logger.info(`🔍 FORENSIC_INVESTIGATION: Checking actual job status after HTTP 500...`);
+          const forensicStatus = await this.gateway.getJobStatus(jobId);
+          if (forensicStatus.assigned_to && forensicStatus.assigned_to !== ourDID) {
+            logger.error(`🎯 SMOKING_GUN: Job ${jobId} IS assigned to ${forensicStatus.assigned_to}!`);
+            logger.error(`🚨 PROOF: HTTP 500 was hiding race condition - job belongs to another encoder`);
+            logger.error(`� EVIDENCE: status=${forensicStatus.status}, assigned_to=${forensicStatus.assigned_to}`);
+            logger.error(`⚖️ CONCLUSION: Gateway API bug confirmed - should have returned HTTP 409`);
+            isRetryable = false; // Don't retry jobs that are clearly assigned to others
+          } else if (!forensicStatus.assigned_to) {
+            logger.warn(`🤔 Job ${jobId} shows unassigned after HTTP 500 - possible transient gateway error`);
+            isRetryable = true;
+          } else {
+            logger.warn(`🧩 Job ${jobId} shows assigned to us after HTTP 500 - gateway inconsistency`);
+            isRetryable = true;
+          }
+        } catch (forensicError) {
+          logger.warn(`🔍 Could not perform forensic investigation on job ${jobId}:`, forensicError);
+          logger.info(`�🔄 Will retry as potential temporary gateway instability (defensive approach)`);
+          isRetryable = true; // Default to retrying if we can't investigate
+        }
         
       } else if (errorMessage.includes('timeout')) {
         logger.warn(`⏰ GATEWAY_TIMEOUT: Job ${jobId} - gateway performance issue detected`);
