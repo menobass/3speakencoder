@@ -566,20 +566,65 @@ export class ThreeSpeakEncoder {
         jobStatus = await this.gateway.getJobStatus(jobId);
         logger.info(`🔍 Job ${jobId} status after accept: assigned_to=${jobStatus.assigned_to || 'null'}, status=${jobStatus.status || 'unknown'}`);
         
-        // After acceptJob(), the job MUST be assigned to us
-        if (jobStatus.assigned_to !== ourDID) {
+        // 🔍 DEBUG: Log DID format details for investigation
+        logger.info(`🔍 DID_FORMAT_DEBUG: Our DID="${ourDID}"`);
+        logger.info(`🔍 DID_FORMAT_DEBUG: Gateway assigned_to="${jobStatus.assigned_to || 'null'}"`);
+        
+        // 🛡️ DEFENSIVE: Handle DID format mismatches (did:key: prefix issues)
+        const normalizeJobOwner = (owner: string | null): string => {
+          if (!owner) return '';
+          // Handle both "did:key:xyz" and "didxyz" formats
+          if (owner.startsWith('did:key:')) {
+            return owner; // Already has prefix
+          } else if (owner.startsWith('did')) {
+            return `did:key:${owner.substring(3)}`; // Convert "didxyz" to "did:key:xyz" 
+          }
+          return owner;
+        };
+        
+        const normalizeOurDID = (ourDid: string): string => {
+          if (!ourDid) return '';
+          // Handle both "did:key:xyz" and "didxyz" formats
+          if (ourDid.startsWith('did:key:')) {
+            return ourDid; // Already has prefix
+          } else if (ourDid.startsWith('did')) {
+            return `did:key:${ourDid.substring(3)}`; // Convert "didxyz" to "did:key:xyz"
+          }
+          return ourDid;
+        };
+        
+        const normalizedJobOwner = normalizeJobOwner(jobStatus.assigned_to);
+        const normalizedOurDID = normalizeOurDID(ourDID);
+        
+        logger.info(`🔍 DID_NORMALIZED: Our DID="${normalizedOurDID}"`);
+        logger.info(`🔍 DID_NORMALIZED: Gateway assigned_to="${normalizedJobOwner}"`);
+        
+        // After acceptJob(), the job MUST be assigned to us (with normalized comparison)
+        if (normalizedJobOwner !== normalizedOurDID) {
           const actualOwner = jobStatus.assigned_to || 'unassigned/null';
           
           if (!jobStatus.assigned_to) {
             logger.error(`🚨 CLAIM FAILED: Job ${jobId} is still unassigned after acceptJob() - gateway may have rejected our claim`);
           } else {
-            logger.error(`🚨 RACE CONDITION: Job ${jobId} is assigned to ${actualOwner}, but we called acceptJob() first`);
-            logger.error(`🚨 Another encoder won the race condition! This indicates high competition for jobs.`);
+            logger.error(`🚨 DID_MISMATCH: Job ${jobId} assigned_to="${actualOwner}" vs our DID="${ourDID}"`);
+            logger.error(`🔍 NORMALIZED: Gateway="${normalizedJobOwner}" vs Ours="${normalizedOurDID}"`);
+            
+            // Check if it's just a format mismatch vs actual different owner
+            const jobOwnerCore = (jobStatus.assigned_to || '').replace(/^did:key:/, '').replace(/^did/, '');
+            const ourDIDCore = ourDID.replace(/^did:key:/, '').replace(/^did/, '');
+            
+            if (jobOwnerCore === ourDIDCore) {
+              logger.warn(`⚠️ DID_FORMAT_MISMATCH: Same core DID but different format - this is a gateway API bug`);
+              logger.warn(`🔧 PROCEEDING: Core DIDs match, treating as successful claim`);
+              // Continue processing since it's the same DID with different format
+            } else {
+              logger.error(`🚨 RACE CONDITION: Job ${jobId} is assigned to different encoder: ${actualOwner}`);
+              logger.error(`🚨 Another encoder won the race condition! This indicates high competition for jobs.`);
+              // Gracefully handle the conflict without throwing
+              this.jobQueue.failJob(jobId, `Failed to claim job: assigned_to=${actualOwner}, expected=${ourDID}`, false);
+              return;
+            }
           }
-          
-          // Gracefully handle the conflict without throwing
-          this.jobQueue.failJob(jobId, `Failed to claim job: assigned_to=${actualOwner}, expected=${ourDID}`, false);
-          return;
         }
         
         if (jobStatus.status !== 'assigned') {
@@ -608,14 +653,34 @@ export class ThreeSpeakEncoder {
         ownershipCheckInterval = setInterval(async () => {
           try {
             const currentStatus = await this.gateway.getJobStatus(jobId);
-            if (currentStatus.assigned_to !== ourDID) {
-              logger.error(`🚨 OWNERSHIP_HIJACK_DETECTED: Job ${jobId} reassigned during processing!`);
-              logger.error(`📊 CRITICAL_BUG: assigned_to changed from ${ourDID} to ${currentStatus.assigned_to}`);
-              logger.error(`🛑 ABORTING: Stopping processing to prevent duplicate work`);
+            
+            // 🛡️ DEFENSIVE: Use same DID normalization logic as initial check
+            const normalizeOwner = (owner: string | null): string => {
+              if (!owner) return '';
+              if (owner.startsWith('did:key:')) return owner;
+              if (owner.startsWith('did')) return `did:key:${owner.substring(3)}`;
+              return owner;
+            };
+            
+            const normalizedCurrentOwner = normalizeOwner(currentStatus.assigned_to);
+            const normalizedOurDID = normalizeOwner(ourDID);
+            
+            if (normalizedCurrentOwner !== normalizedOurDID && currentStatus.assigned_to) {
+              // Check if it's just format mismatch vs real ownership change
+              const currentOwnerCore = (currentStatus.assigned_to || '').replace(/^did:key:/, '').replace(/^did/, '');
+              const ourDIDCore = ourDID.replace(/^did:key:/, '').replace(/^did/, '');
               
-              // Clear the interval and abort processing
-              if (ownershipCheckInterval) clearInterval(ownershipCheckInterval);
-              throw new Error(`Job ownership hijacked: assigned_to=${currentStatus.assigned_to}, expected=${ourDID}`);
+              if (currentOwnerCore !== ourDIDCore) {
+                logger.error(`🚨 OWNERSHIP_HIJACK_DETECTED: Job ${jobId} reassigned during processing!`);
+                logger.error(`📊 CRITICAL_BUG: assigned_to changed from ${ourDID} to ${currentStatus.assigned_to}`);
+                logger.error(`🛑 ABORTING: Stopping processing to prevent duplicate work`);
+                
+                // Clear the interval and abort processing
+                if (ownershipCheckInterval) clearInterval(ownershipCheckInterval);
+                throw new Error(`Job ownership hijacked: assigned_to=${currentStatus.assigned_to}, expected=${ourDID}`);
+              } else {
+                logger.debug(`🔍 DID format difference detected but same core DID - continuing safely`);
+              }
             }
           } catch (error) {
             // Don't abort on verification errors, just log them
