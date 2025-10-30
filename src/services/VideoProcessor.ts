@@ -157,40 +157,70 @@ export class VideoProcessor {
       }
     }
 
-    // Sort by priority (working hardware codecs first, then software)
-    this.availableCodecs = codecs
+    // 🛡️ CASCADING FALLBACK: Include ALL available codecs for fallback options
+    // Primary: tested codecs (confirmed working)
+    const testedCodecs = codecs
       .filter(c => c.available && c.tested)
       .sort((a, b) => a.priority - b.priority);
+    
+    // Fallback: untested but available codecs (for cascading fallback)
+    const fallbackCodecs = codecs
+      .filter(c => c.available && !c.tested)
+      .sort((a, b) => a.priority - b.priority);
+    
+    // Always ensure libx264 is available as final fallback
+    const softwareFallback = codecs.find(c => c.name === 'libx264' && c.available);
+    
+    // Combine: tested first, then untested hardware, then software
+    this.availableCodecs = [...testedCodecs];
+    
+    // Add untested hardware codecs as fallback options
+    fallbackCodecs.forEach(codec => {
+      if (codec.type === 'hardware' && !this.availableCodecs.find(c => c.name === codec.name)) {
+        this.availableCodecs.push(codec);
+      }
+    });
+    
+    // Ensure software fallback is always last
+    if (softwareFallback && !this.availableCodecs.find(c => c.name === 'libx264')) {
+      this.availableCodecs.push(softwareFallback);
+    }
 
-    // 📊 Detailed codec detection results
-    logger.info('🔍 Codec Detection Summary:');
+    // 📊 Detailed codec detection results with cascading fallback info
+    logger.info('🔍 Codec Detection Summary (Cascading Fallback Strategy):');
     logger.info('═══════════════════════════════════════');
     
-    const workingHardware = this.availableCodecs.filter(c => c.type === 'hardware');
-    const workingSoftware = this.availableCodecs.filter(c => c.type === 'software');
+    const testedHardware = this.availableCodecs.filter(c => c.type === 'hardware' && c.tested);
+    const untestedHardware = this.availableCodecs.filter(c => c.type === 'hardware' && !c.tested);
+    const softwareCodecs = this.availableCodecs.filter(c => c.type === 'software');
     
-    if (workingHardware.length > 0) {
-      logger.info('🚀 Hardware Acceleration ENABLED:');
-      workingHardware.forEach(codec => {
-        logger.info(`  ✅ ${codec.name} (${codec.type}) - Priority ${codec.priority}`);
-      });
-    } else {
-      logger.warn('⚠️ No working hardware codecs found');
-    }
-    
-    if (workingSoftware.length > 0) {
-      logger.info('💻 Software Codecs Available:');
-      workingSoftware.forEach(codec => {
-        logger.info(`  ✅ ${codec.name} (${codec.type})`);
+    if (testedHardware.length > 0) {
+      logger.info('🚀 PRIMARY: Tested Hardware (Will try first):');
+      testedHardware.forEach(codec => {
+        logger.info(`  ✅ ${codec.name} - Priority ${codec.priority} (Confirmed working)`);
       });
     }
     
-    // Show failed codecs for debugging
-    const failedCodecs = codecs.filter(c => c.available && !c.tested);
+    if (untestedHardware.length > 0) {
+      logger.info('🔄 FALLBACK: Untested Hardware (Will try if primary fails):');
+      untestedHardware.forEach(codec => {
+        logger.info(`  🧪 ${codec.name} - Priority ${codec.priority} (Available but untested)`);
+      });
+    }
+    
+    if (softwareCodecs.length > 0) {
+      logger.info('🔄️ FINAL FALLBACK: Software (Bulletproof reliability):');
+      softwareCodecs.forEach(codec => {
+        logger.info(`  💻 ${codec.name} - Always reliable`);
+      });
+    }
+    
+    // Show completely failed codecs for debugging
+    const failedCodecs = codecs.filter(c => c.available && !this.availableCodecs.find(ac => ac.name === c.name));
     if (failedCodecs.length > 0) {
-      logger.warn('❌ Available but Failed Codecs:');
+      logger.warn('❌ Excluded Codecs (Failed tests):');
       failedCodecs.forEach(codec => {
-        logger.warn(`  ❌ ${codec.name} (${codec.type}) - Available in FFmpeg but test failed`);
+        logger.warn(`  ❌ ${codec.name} (${codec.type}) - Test failed, not included in fallback chain`);
       });
     }
     
@@ -698,60 +728,136 @@ export class VideoProcessor {
     await fs.mkdir(profileDir, { recursive: true });
     
     const outputPath = join(profileDir, 'index.m3u8');
-    const bestCodec = this.availableCodecs[0]!;
     
-    return new Promise((resolve, reject) => {
-      let segmentCount = 0;
-      const segments: string[] = [];
+    // 🔄 CASCADING FALLBACK SYSTEM: Try codecs in order of preference
+    // 1. Tested hardware codecs (highest priority)
+    // 2. Untested hardware codecs (medium priority) 
+    // 3. Software codecs (bulletproof fallback)
+    
+    const testedHardware = this.availableCodecs.filter(c => c.type === 'hardware' && c.tested);
+    const untestedHardware = this.availableCodecs.filter(c => c.type === 'hardware' && !c.tested);
+    const softwareCodecs = this.availableCodecs.filter(c => c.type === 'software');
+    
+    const fallbackChain = [...testedHardware, ...untestedHardware, ...softwareCodecs];
+    
+    if (fallbackChain.length === 0) {
+      throw new Error('No codecs available for encoding - this should never happen');
+    }
+    
+    let lastError: Error | null = null;
+    
+    // Try each codec in the fallback chain
+    for (let i = 0; i < fallbackChain.length; i++) {
+      const codec = fallbackChain[i];
+      if (!codec) {
+        logger.error(`❌ Codec at index ${i} is undefined - skipping`);
+        continue;
+      }
       
+      const isLastAttempt = i === fallbackChain.length - 1;
+      const isHardware = codec.type === 'hardware';
+      
+      try {
+        logger.info(`🎯 Attempting ${profile.name} encoding with ${codec.name} (${codec.type})`);
+        logger.info(`   📍 Fallback position ${i + 1}/${fallbackChain.length}`);
+        
+        const result = await this.attemptEncode(
+          sourceFile,
+          profile,
+          profileDir,
+          outputPath,
+          codec,
+          isHardware ? 60000 : 1800000, // 1 min for hardware, 30 min for software
+          progressCallback
+        );
+        
+        logger.info(`✅ ${profile.name} encoding SUCCESS with ${codec.name}`);
+        return result;
+        
+      } catch (error) {
+        lastError = error as Error;
+        const errorMsg = cleanErrorForLogging(error);
+        
+        if (isLastAttempt) {
+          // Final fallback failed - this is catastrophic
+          logger.error(`💥 FINAL FALLBACK FAILED: ${profile.name} encoding failed with ${codec.name}`);
+          logger.error(`   🚨 All ${fallbackChain.length} codecs exhausted`);
+          logger.error(`   ❌ Error: ${errorMsg}`);
+          break;
+        } else {
+          // Log failure and continue to next codec
+          logger.warn(`⚠️ ${codec.name} failed for ${profile.name}, falling back...`);
+          logger.warn(`   📊 Failed codec: ${codec.name} (${codec.type})`);
+          const nextCodec = fallbackChain[i + 1];
+          if (nextCodec) {
+            logger.warn(`   🔄 Next fallback: ${nextCodec.name} (${nextCodec.type})`);
+          }
+          logger.warn(`   ❌ Error: ${errorMsg}`);
+        }
+      }
+    }
+    
+    // If we get here, all codecs failed
+    throw new Error(`All encoding attempts failed for ${profile.name}. Last error: ${lastError?.message || 'Unknown error'}`);
+  }
+
+  private async attemptEncode(
+    sourceFile: string,
+    profile: { name: string; height: number },
+    profileDir: string,
+    outputPath: string,
+    codec: { name: string; type: string },
+    timeoutMs: number,
+    progressCallback?: (progress: number) => void
+  ): Promise<EncodedOutput> {
+    return new Promise((resolve, reject) => {
       // Get profile-specific settings matching Eddie's script
       const profileSettings = this.getProfileSettings(profile.name);
       
-      // 🚀 HARDWARE ACCELERATION: Apply full hardware pipeline for maximum performance
+      // 🚀 Configure encoding based on codec type
       let command = ffmpeg(sourceFile);
       
-      // Configure hardware acceleration based on detected codec
-      if (bestCodec.name === 'h264_vaapi') {
+      if (codec.name === 'h264_vaapi') {
         // AMD/Intel VAAPI - Full hardware pipeline
         command = command
           .addInputOptions('-hwaccel', 'vaapi')
           .addInputOptions('-vaapi_device', '/dev/dri/renderD128')  
           .addInputOptions('-hwaccel_output_format', 'vaapi')
-          .videoCodec(bestCodec.name)
-          .addOption('-vf', `scale_vaapi=-2:${profile.height}:format=nv12`)  // Hardware scaling
-          .addOption('-qp', '19')  // Quality parameter for VAAPI
-          .addOption('-bf', '2');   // B-frames for efficiency
-      } else if (bestCodec.name === 'h264_nvenc') {
+          .videoCodec(codec.name)
+          .addOption('-vf', `scale_vaapi=-2:${profile.height}:format=nv12`)
+          .addOption('-qp', '19')
+          .addOption('-bf', '2');
+      } else if (codec.name === 'h264_nvenc') {
         // NVIDIA NVENC - Full hardware pipeline  
         command = command
           .addInputOptions('-hwaccel', 'cuda')
           .addInputOptions('-hwaccel_output_format', 'cuda')
-          .videoCodec(bestCodec.name)
-          .addOption('-vf', `scale_cuda=-2:${profile.height}`)  // Hardware scaling
+          .videoCodec(codec.name)
+          .addOption('-vf', `scale_cuda=-2:${profile.height}`)
           .addOption('-preset', 'medium')
-          .addOption('-cq', '19')   // Constant quality for NVENC
+          .addOption('-cq', '19')
           .addOption('-b:v', profileSettings.bitrate)
           .addOption('-maxrate', profileSettings.maxrate)
           .addOption('-bufsize', profileSettings.bufsize);
-      } else if (bestCodec.name === 'h264_qsv') {
+      } else if (codec.name === 'h264_qsv') {
         // Intel QuickSync - Full hardware pipeline
         command = command
           .addInputOptions('-hwaccel', 'qsv')
           .addInputOptions('-hwaccel_output_format', 'qsv')
-          .videoCodec(bestCodec.name)
-          .addOption('-vf', `scale_qsv=-2:${profile.height}`)  // Hardware scaling
+          .videoCodec(codec.name)
+          .addOption('-vf', `scale_qsv=-2:${profile.height}`)
           .addOption('-preset', 'medium')
-          .addOption('-global_quality', '19')  // Quality for QSV
+          .addOption('-global_quality', '19')
           .addOption('-b:v', profileSettings.bitrate)
           .addOption('-maxrate', profileSettings.maxrate)
           .addOption('-bufsize', profileSettings.bufsize);
       } else {
-        // Software fallback - Standard CPU encoding
+        // Software encoding (libx264)
         command = command
-          .videoCodec(bestCodec.name)
-          .addOption('-preset', 'medium')  // Better quality than veryfast
-          .addOption('-crf', '19')  // Constant rate factor for libx264
-          .addOption('-vf', `scale=-2:${profile.height},fps=30`)  // Software scaling
+          .videoCodec(codec.name)
+          .addOption('-preset', 'medium')
+          .addOption('-crf', '19')
+          .addOption('-vf', `scale=-2:${profile.height},fps=30`)
           .addOption('-b:v', profileSettings.bitrate)
           .addOption('-maxrate', profileSettings.maxrate)
           .addOption('-bufsize', profileSettings.bufsize);
@@ -772,10 +878,12 @@ export class VideoProcessor {
         .addOption('-start_number', '0')
         .addOption('-hls_segment_filename', join(profileDir, `${profile.name}_%d.ts`))
         .format('hls')
-        .output(outputPath)
+        .output(outputPath);
+      
+      // Set up event handlers
+      command
         .on('start', (commandLine) => {
-          logger.info(`🎬 Starting ${profile.name} encoding with ${bestCodec.name}`);
-          logger.debug('FFmpeg command:', commandLine);
+          logger.debug(`🎬 FFmpeg command: ${commandLine}`);
         })
         .on('progress', (progress) => {
           if (progressCallback && progress.percent) {
@@ -784,11 +892,11 @@ export class VideoProcessor {
         })
         .on('end', async () => {
           try {
-            // Count segments
+            clearTimeout(timeoutId);
+            
+            // Count segments and get file info
             const files = await fs.readdir(profileDir);
             const segmentFiles = files.filter(f => f.endsWith('.ts'));
-            
-            // Get file size
             const stats = await fs.stat(outputPath);
             
             resolve({
@@ -804,8 +912,8 @@ export class VideoProcessor {
           }
         })
         .on('error', (error) => {
-          logger.error(`❌ ${profile.name} encoding failed:`, cleanErrorForLogging(error));
-          // 🚨 CRITICAL: Kill FFmpeg process to prevent memory leak
+          clearTimeout(timeoutId);
+          // Kill FFmpeg process to prevent memory leak
           try {
             command.kill('SIGKILL');
           } catch (e) {
@@ -814,25 +922,18 @@ export class VideoProcessor {
           reject(error);
         });
 
-      // 🚨 MEMORY SAFE: Add timeout to prevent hung FFmpeg processes
+      // Set timeout based on codec type (shorter for hardware, longer for software)
       const timeoutId = setTimeout(() => {
-        logger.warn(`⚠️ FFmpeg timeout for ${profile.name}, killing process...`);
+        logger.warn(`⏰ ${codec.name} timeout (${timeoutMs/1000}s) for ${profile.name}, killing process...`);
         try {
           command.kill('SIGKILL');
         } catch (e) {
           // Ignore kill errors
         }
-        reject(new Error(`FFmpeg encoding timeout for ${profile.name}`));
-      }, 30 * 60 * 1000); // 30 minute timeout per profile
+        reject(new Error(`${codec.name} encoding timeout for ${profile.name} (${timeoutMs/1000}s)`));
+      }, timeoutMs);
 
-      command.on('end', () => {
-        clearTimeout(timeoutId); // Cancel timeout on success
-      });
-
-      command.on('error', () => {
-        clearTimeout(timeoutId); // Cancel timeout on error
-      });
-
+      // Start encoding
       command.run();
     });
   }
