@@ -133,6 +133,7 @@ dev.json
 docs/internal/
 design-*.md
 super-encoder-*.md
+docs/gateway-monitoring-service.md
 
 # Administrative scripts and infrastructure tools
 admin-scripts/

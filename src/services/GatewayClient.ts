@@ -153,7 +153,7 @@ export class GatewayClient {
 
   async getJob(): Promise<VideoJob | null> {
     try {
-      const response = await this.client.get<VideoJob>('/api/v0/gateway/getJob', { timeout: 15000 });
+      const response = await this.client.get<VideoJob>('/api/v0/gateway/getJob', { timeout: 30000 }); // Increased to 30s for gateway issues
 
       if (response.data) {
         logger.debug('📋 Gateway job retrieved successfully');
@@ -171,6 +171,9 @@ export class GatewayClient {
           return null;
         } else if (error.code === 'ENOTFOUND') {
           logger.warn('🌐 DNS resolution failed for gateway, will retry on next poll');
+          return null;
+        } else if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+          logger.warn('⏰ Gateway request timeout - service may be overloaded, will retry on next poll');
           return null;
         }
       }
