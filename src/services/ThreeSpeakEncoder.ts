@@ -1244,6 +1244,169 @@ export class ThreeSpeakEncoder {
   }
 
   /**
+   * 🚀 FORCE PROCESSING: Bypass gateway completely and process job directly
+   * 
+   * This is the nuclear option for 3Speak infrastructure nodes:
+   * 1. Query MongoDB directly for job details
+   * 2. Download and process video completely
+   * 3. Upload results to IPFS
+   * 4. Update MongoDB directly with completion status
+   * 
+   * ⚠️ REQUIRES MONGODB ACCESS - Only works for 3Speak infrastructure nodes
+   */
+  async forceProcessJob(jobId: string): Promise<void> {
+    if (!this.mongoVerifier.isEnabled()) {
+      throw new Error('Force processing requires MongoDB access - only available for 3Speak infrastructure nodes');
+    }
+
+    logger.info(`🚀 FORCE_PROCESSING: Starting bypass processing for job ${jobId}`);
+    logger.warn(`⚠️ TANK_MODE: Bypassing gateway completely - direct MongoDB control`);
+    
+    try {
+      // Step 1: Get job details directly from MongoDB
+      logger.info(`📊 Step 1: Querying MongoDB for job details...`);
+      const jobDoc = await this.mongoVerifier.getJobDetails(jobId);
+      
+      if (!jobDoc) {
+        throw new Error(`Job ${jobId} not found in MongoDB database`);
+      }
+
+      logger.info(`✅ Found job in MongoDB:`);
+      logger.info(`   📄 Job ID: ${jobDoc.id}`);
+      logger.info(`   📺 Video: ${jobDoc.metadata?.video_owner}/${jobDoc.metadata?.video_permlink}`);
+      logger.info(`   📊 Status: ${jobDoc.status}`);
+      logger.info(`   📥 Input: ${jobDoc.input.uri}`);
+      logger.info(`   💾 Size: ${(jobDoc.input.size / 1024 / 1024).toFixed(2)} MB`);
+
+      // Step 2: Check if already completed
+      if (jobDoc.status === 'complete' && jobDoc.result?.cid) {
+        logger.warn(`⚠️ Job ${jobId} is already complete with CID: ${jobDoc.result.cid}`);
+        logger.info(`💡 Video should already be published`);
+        return;
+      }
+
+      // Step 3: Force assign job to ourselves in database first (claim ownership)
+      const ourDID = this.identity.getDIDKey();
+      logger.info(`🔒 Step 2: Claiming job ownership in MongoDB...`);
+      
+      await this.mongoVerifier.updateJob(jobId, {
+        assigned_to: ourDID,
+        assigned_date: new Date(),
+        status: 'assigned',
+        last_pinged: new Date()
+      });
+      logger.info(`✅ Claimed job ${jobId} ownership in MongoDB`);
+
+      // Step 4: Convert MongoDB job to VideoJob format for processing
+      logger.info(`🔄 Step 3: Converting to internal job format...`);
+      
+      const videoJob: VideoJob = {
+        id: jobDoc.id,
+        type: 'gateway',
+        status: JobStatus.RUNNING,
+        created_at: jobDoc.created_at.toISOString(),
+        input: {
+          uri: jobDoc.input.uri,
+          size: jobDoc.input.size
+        },
+        metadata: {
+          video_owner: jobDoc.metadata?.video_owner || 'unknown',
+          video_permlink: jobDoc.metadata?.video_permlink || 'unknown'
+        },
+        storageMetadata: jobDoc.storageMetadata || {
+          app: '3speak',
+          key: `${jobDoc.metadata?.video_owner}/${jobDoc.metadata?.video_permlink}/video`,
+          type: 'video'
+        },
+        profiles: this.getProfilesForJob(['1080p', '720p', '480p']),
+        output: []
+      };
+
+      // Step 5: Mark as running in MongoDB
+      await this.mongoVerifier.updateJob(jobId, {
+        status: 'running',
+        last_pinged: new Date(),
+        'progress.download_pct': 0,
+        'progress.pct': 0
+      });
+
+      // Step 6: Start dashboard tracking
+      if (this.dashboard) {
+        this.dashboard.startJob(jobId, {
+          type: 'force-processing',
+          video_id: jobDoc.metadata?.video_permlink || jobId,
+          input_uri: jobDoc.input.uri,
+          profiles: ['1080p', '720p', '480p']
+        });
+      }
+
+      // Step 7: Process the video using existing pipeline
+      logger.info(`🎬 Step 4: Processing video (download → encode → upload)...`);
+      
+      this.processor.setCurrentJob(jobId);
+      
+      const result = await this.processor.processVideo(videoJob, (progress) => {
+        // Update progress in MongoDB instead of gateway
+        this.mongoVerifier.updateJob(jobId, {
+          'progress.pct': progress.percent,
+          'progress.download_pct': 100, // Download always complete during encoding
+          last_pinged: new Date()
+        }).catch(err => {
+          logger.warn(`⚠️ Failed to update progress in MongoDB:`, err);
+        });
+
+        // Update dashboard
+        if (this.dashboard) {
+          this.dashboard.updateJobProgress(jobId, progress.percent, 'force-processing');
+        }
+      });
+
+      // Step 8: Get master playlist CID
+      const masterOutput = result[0];
+      if (!masterOutput || !masterOutput.ipfsHash) {
+        throw new Error('No master playlist CID received from video processor');
+      }
+
+      logger.info(`✅ Step 5: Video processing complete!`);
+      logger.info(`📋 Master playlist CID: ${masterOutput.ipfsHash}`);
+
+      // Step 9: Force complete job in MongoDB (the magic happens here!)
+      logger.info(`🚀 Step 6: Force completing job in MongoDB...`);
+      await this.mongoVerifier.forceCompleteJob(jobId, { cid: masterOutput.ipfsHash });
+
+      // Step 10: Complete dashboard tracking
+      if (this.dashboard) {
+        this.dashboard.completeJob(jobId, result);
+      }
+
+      logger.info(`🎉 FORCE_PROCESSING_COMPLETE: Job ${jobId} processed and marked complete!`);
+      logger.info(`🌟 Video should now be published automatically by 3Speak system`);
+      logger.info(`🛡️ TANK_MODE: Bypassed all gateway issues - direct database control succeeded`);
+
+    } catch (error) {
+      logger.error(`❌ Force processing failed for job ${jobId}:`, error);
+      
+      // Try to mark as failed in MongoDB
+      try {
+        await this.mongoVerifier.updateJob(jobId, {
+          status: 'failed',
+          last_pinged: new Date(),
+          error: error instanceof Error ? error.message : 'Force processing failed'
+        });
+      } catch (updateError) {
+        logger.warn(`⚠️ Failed to update job failure in MongoDB:`, updateError);
+      }
+
+      // Update dashboard with failure
+      if (this.dashboard) {
+        this.dashboard.failJob(jobId, `Force processing failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+      
+      throw error;
+    }
+  }
+
+  /**
    * Manually reset gateway failure tracking (useful for dashboard)
    */
   resetGatewayStatus(): void {

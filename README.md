@@ -85,8 +85,10 @@ A modern, reliable replacement for the 3Speak video encoder with **dual-mode ope
 - 🏗️ **IPFS Cluster Support**: Optional cluster pinning to reduce main daemon load
 - 🏠 **Local Fallback Pinning**: 3Speak nodes can pin locally when supernode is overloaded
 - 📊 **Pin Database**: SQLite tracking of local pins with automatic sync service
-- �️ **MongoDB Verification**: Direct database fallback for 3Speak infrastructure nodes
-- �🚀 **Smart Retry System**: Cache results, skip wasteful re-processing on retries
+- 🛡️ **MongoDB Verification**: Direct database fallback for 3Speak infrastructure nodes
+- � **Force Processing**: Complete gateway bypass for emergency job processing (3Speak infrastructure)
+- 📱 **Mobile Dashboard Control**: Phone-manageable encoder with force processing capabilities
+- ⚡ **Smart Retry System**: Cache results, skip wasteful re-processing on retries
 - 🔍 **Clean Error Logging**: No more buffer dumps, user-friendly error messages
 - 💪 **Production Ready**: 5-attempt retry logic with intelligent error handling
 - 📂 **Direct IPFS Integration**: Uploads directly to 3Speak's IPFS infrastructure
@@ -241,6 +243,26 @@ MONGODB_VERIFICATION_ENABLED=false
 # MONGODB_CONNECTION_TIMEOUT=10000
 # MONGODB_SOCKET_TIMEOUT=30000
 ```
+
+### 🚀 Force Processing (3Speak Infrastructure Only)
+
+When `MONGODB_VERIFICATION_ENABLED=true`, the encoder gains **Force Processing** capabilities:
+
+**📱 Dashboard Features:**
+- **Force Processing Section**: Bypass gateway completely for emergency job processing
+- **MongoDB Status Check**: Real-time verification of database connectivity
+- **Mobile Control**: Manage encoder from phone via web dashboard
+
+**🔧 How It Works:**
+1. **Complete Gateway Bypass**: Process jobs directly via MongoDB manipulation
+2. **6-Step Force Pipeline**: Claim → Download → Encode → Upload → Complete → Update DB
+3. **Emergency Recovery**: Process stuck jobs when gateway APIs are down
+4. **Phone Management**: Control your encoder remotely via dashboard
+
+**⚠️ Requirements:**
+- Valid MongoDB credentials for 3Speak database
+- 3Speak infrastructure node access
+- Used only for emergency situations when gateway is unreliable
 
 ### IPFS Cluster Pinning (Optional)
 
@@ -580,14 +602,48 @@ GET /api/jobs/:jobId
 Authorization: Bearer your-api-key
 ```
 
-## 🤝 Contributing
+## � Testing
+
+Comprehensive test suite available in the `tests/` directory:
+
+### Quick Tests
+```bash
+# Test MongoDB connectivity
+node tests/test-mongodb-connection.js
+
+# Test force processing (requires MongoDB access)
+npx ts-node tests/test-mongo-force.ts
+
+# Test IPFS cluster functionality  
+node tests/test-cluster-pins.js
+```
+
+### Hardware Acceleration Tests
+Test video files included for different acceleration methods:
+- `tests/test_vaapi.mp4` - VAAPI hardware acceleration
+- `tests/test_qsv.mp4` - Intel Quick Sync Video
+- `tests/test_x264.mp4` - Software encoding baseline
+
+### Full Test Suite
+```bash
+# Run all service integration tests
+npx ts-node tests/test-services.ts
+
+# Test individual components
+node tests/test-local-fallback.js
+node tests/test-direct-api-mode.js
+```
+
+See `tests/README.md` for complete testing documentation.
+
+## �🤝 Contributing
 
 We welcome contributions! Please:
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Add tests if applicable
+4. Add tests if applicable (see `tests/` directory)
 5. Submit a pull request
 
 ## 📄 License

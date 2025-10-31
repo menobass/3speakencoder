@@ -139,6 +139,56 @@ export class DashboardService {
       }
     });
 
+    // Force processing endpoint - bypasses gateway completely
+    this.app.post('/api/force-process-job', express.json(), async (req, res) => {
+      const { jobId } = req.body;
+      if (!jobId) {
+        return res.status(400).json({ error: 'Job ID is required' });
+      }
+      try {
+        if (this.encoder) {
+          await this.encoder.forceProcessJob(jobId);
+          return res.json({ 
+            success: true, 
+            message: `Force processing of job ${jobId} completed successfully! Video should now be published.` 
+          });
+        } else {
+          return res.status(503).json({ error: 'Encoder not available' });
+        }
+      } catch (error) {
+        logger.error('Failed to force process job:', error);
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        
+        // Check if it's a MongoDB access error
+        if (errorMsg.includes('MongoDB access') || errorMsg.includes('not enabled')) {
+          return res.status(403).json({ 
+            error: 'Force processing requires MongoDB access - only available for 3Speak infrastructure nodes' 
+          });
+        }
+        
+        return res.status(500).json({ error: errorMsg });
+      }
+    });
+
+    // MongoDB status endpoint - for checking force processing availability
+    this.app.get('/api/mongodb-status', (req, res) => {
+      try {
+        if (this.encoder) {
+          const mongoStatus = (this.encoder as any).mongoVerifier.getStatus();
+          return res.json({
+            enabled: mongoStatus.enabled,
+            connected: mongoStatus.connected,
+            databaseName: mongoStatus.databaseName
+          });
+        } else {
+          return res.json({ enabled: false, connected: false });
+        }
+      } catch (error) {
+        logger.error('Failed to get MongoDB status:', error);
+        return res.json({ enabled: false, connected: false });
+      }
+    });
+
     // Manual job completion endpoint - for jobs that are processed but failed to report
     this.app.post('/api/manual-complete', express.json(), async (req, res) => {
       const { jobId, result } = req.body;

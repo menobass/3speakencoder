@@ -300,6 +300,74 @@ export class MongoVerifier {
   }
 
   /**
+   * Update job status and progress in MongoDB
+   */
+  async updateJob(jobId: string, updates: any): Promise<void> {
+    if (!this.isEnabled()) {
+      throw new Error('MongoDB verification not enabled');
+    }
+
+    try {
+      const updateResult = await this.jobs!.updateOne(
+        { id: jobId },
+        { $set: updates }
+      );
+
+      if (updateResult.matchedCount === 0) {
+        throw new Error(`Job ${jobId} not found in MongoDB`);
+      }
+
+    } catch (error) {
+      logger.error(`❌ Failed to update job ${jobId} in MongoDB:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * 🚀 FORCE MODE: Update job directly in MongoDB (bypass gateway)
+   * This is the nuclear option for 3Speak infrastructure nodes
+   */
+  async forceCompleteJob(jobId: string, result: { cid: string }): Promise<void> {
+    if (!this.isEnabled()) {
+      throw new Error('MongoDB verification not enabled - cannot force complete job');
+    }
+
+    try {
+      logger.info(`🚀 FORCE_COMPLETE: Updating job ${jobId} directly in MongoDB`);
+      logger.info(`📊 Setting status=complete, result.cid=${result.cid}`);
+      
+      const updateResult = await this.jobs!.updateOne(
+        { id: jobId },
+        {
+          $set: {
+            status: 'complete',
+            completed_at: new Date(),
+            last_pinged: new Date(),
+            'result.cid': result.cid,
+            'progress.pct': 100,
+            'progress.download_pct': 100
+          }
+        }
+      );
+
+      if (updateResult.matchedCount === 0) {
+        throw new Error(`Job ${jobId} not found in MongoDB`);
+      }
+
+      if (updateResult.modifiedCount === 0) {
+        logger.warn(`⚠️ Job ${jobId} was found but not modified - may already be complete`);
+      } else {
+        logger.info(`✅ FORCE_COMPLETE: Job ${jobId} marked as complete in MongoDB`);
+        logger.info(`🎉 Video should now be published automatically`);
+      }
+
+    } catch (error) {
+      logger.error(`❌ Failed to force complete job ${jobId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Health check for MongoDB connection
    */
   async healthCheck(): Promise<boolean> {

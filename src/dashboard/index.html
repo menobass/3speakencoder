@@ -402,6 +402,41 @@
 
         <div class="jobs-section">
             <div class="card">
+                <h3>🚀 Force Processing</h3>
+                <p style="color: #666; margin-bottom: 15px; font-size: 14px;">
+                    <strong>⚠️ 3Speak Infrastructure Nodes Only</strong><br>
+                    Bypass gateway completely and process job directly via MongoDB.<br>
+                    <span id="mongoStatus" style="color: #e74c3c;">📡 Checking MongoDB access...</span>
+                </p>
+                <div class="manual-job-section" id="forceProcessSection">
+                    <div class="manual-job-form">
+                        <input type="text" 
+                               class="job-id-input" 
+                               id="forceJobId" 
+                               placeholder="Enter Job ID for force processing">
+                        <button class="btn" 
+                                id="forceProcessBtn"
+                                onclick="dashboard.forceProcessJob()" 
+                                disabled
+                                style="background: #e74c3c; opacity: 0.6;">
+                            🚀 Force Process
+                        </button>
+                    </div>
+                    <div id="forceJobStatus" style="margin-top: 10px; font-size: 14px;"></div>
+                    <div id="forceProcessInfo" style="margin-top: 10px; font-size: 12px; color: #666; display: none;">
+                        <strong>How Force Processing Works:</strong><br>
+                        • Queries MongoDB directly for job details<br>
+                        • Downloads and processes video completely<br>
+                        • Uploads results to IPFS<br>
+                        • Updates MongoDB directly (status=complete)<br>
+                        • Bypasses all gateway issues entirely
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="jobs-section">
+            <div class="card">
                 <h3>❌ Failed Jobs</h3>
                 <div id="failedJobsList">
                     <div class="no-jobs">No failed jobs</div>
@@ -454,6 +489,7 @@
                 this.startUptimeCounter();
                 this.loadInitialStatus(); // Load status immediately
                 this.loadFailedJobs();
+                this.checkMongoDBAccess(); // Check MongoDB access for force processing
             }
 
             async loadInitialStatus() {
@@ -805,6 +841,87 @@
                     }
                 } catch (error) {
                     this.showManualJobStatus(`❌ Error: ${error.message}`, 'error');
+                }
+            }
+
+            async forceProcessJob() {
+                const jobIdInput = document.getElementById('forceJobId');
+                const statusDiv = document.getElementById('forceJobStatus');
+                const jobId = jobIdInput.value.trim();
+
+                if (!jobId) {
+                    this.showForceJobStatus('Please enter a job ID', 'error');
+                    return;
+                }
+
+                this.showForceJobStatus('🚀 Starting force processing... This bypasses the gateway completely!', 'info');
+
+                try {
+                    const response = await fetch('/api/force-process-job', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ jobId })
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        this.showForceJobStatus(`✅ ${result.message}`, 'success');
+                        jobIdInput.value = '';
+                        // Refresh job data after successful force processing
+                        setTimeout(() => this.refreshData(), 2000);
+                    } else {
+                        this.showForceJobStatus(`❌ ${result.error}`, 'error');
+                    }
+                } catch (error) {
+                    this.showForceJobStatus(`❌ Error: ${error.message}`, 'error');
+                }
+            }
+
+            showForceJobStatus(message, type) {
+                const statusDiv = document.getElementById('forceJobStatus');
+                statusDiv.textContent = message;
+                statusDiv.className = `status-${type}`;
+                statusDiv.style.display = 'block';
+
+                if (type === 'success') {
+                    setTimeout(() => {
+                        statusDiv.style.display = 'none';
+                    }, 5000);
+                }
+            }
+
+            async checkMongoDBAccess() {
+                const mongoStatus = document.getElementById('mongoStatus');
+                const forceProcessBtn = document.getElementById('forceProcessBtn');
+                const forceProcessInfo = document.getElementById('forceProcessInfo');
+
+                try {
+                    const response = await fetch('/api/mongodb-status');
+                    const result = await response.json();
+
+                    if (result.enabled && result.connected) {
+                        mongoStatus.textContent = '✅ MongoDB access available - Force processing enabled';
+                        mongoStatus.style.color = '#16a085';
+                        forceProcessBtn.disabled = false;
+                        forceProcessBtn.style.opacity = '1';
+                        forceProcessBtn.style.background = '#e74c3c';
+                        forceProcessInfo.style.display = 'block';
+                    } else if (result.enabled && !result.connected) {
+                        mongoStatus.textContent = '⚠️ MongoDB enabled but connection failed';
+                        mongoStatus.style.color = '#f39c12';
+                        forceProcessBtn.disabled = true;
+                    } else {
+                        mongoStatus.textContent = '❌ MongoDB access disabled - Contact 3Speak team for access';
+                        mongoStatus.style.color = '#e74c3c';
+                        forceProcessBtn.disabled = true;
+                    }
+                } catch (error) {
+                    mongoStatus.textContent = '❌ Cannot check MongoDB status';
+                    mongoStatus.style.color = '#e74c3c';
+                    forceProcessBtn.disabled = true;
                 }
             }
 
