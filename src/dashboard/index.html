@@ -324,6 +324,20 @@
                 gap: 15px;
             }
         }
+
+        .loader {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid #333;
+            border-radius: 50%;
+            border-top-color: #00ff00;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
@@ -793,17 +807,21 @@
                         <div style="font-size: 12px; color: #6b7280; margin-top: 5px;">
                             Failed: ${new Date(job.timestamp).toLocaleString()}
                         </div>
-                        ${job.retryable ? `
-                            <div class="job-actions">
+                        <div class="job-actions">
+                            <button class="btn btn-info" onclick="dashboard.checkJobStatus('${job.id}')" 
+                                    style="background: #0ea5e9; margin-right: 10px;">
+                                🔍 Check for Updates
+                            </button>
+                            ${job.retryable ? `
                                 <button class="btn btn-secondary" onclick="dashboard.retryJob('${job.id}')">
                                     🔄 Retry Job
                                 </button>
-                            </div>
-                        ` : `
-                            <div style="margin-top: 10px; font-size: 12px; color: #6b7280;">
-                                ⚠️ Not retryable (permanent failure)
-                            </div>
-                        `}
+                            ` : `
+                                <span style="font-size: 12px; color: #6b7280;">
+                                    ⚠️ Not retryable (permanent failure)
+                                </span>
+                            `}
+                        </div>
                     </div>
                 `).join('');
 
@@ -943,6 +961,78 @@
                     }
                 } catch (error) {
                     this.showManualJobStatus(`❌ Retry error: ${error.message}`, 'error');
+                }
+            }
+
+            async checkJobStatus(jobId) {
+                try {
+                    // Show loading state
+                    const button = document.querySelector(`[onclick="dashboard.checkJobStatus('${jobId}')"]`);
+                    if (button) {
+                        button.disabled = true;
+                        button.innerHTML = '<span class="loader"></span> Checking...';
+                    }
+
+                    const response = await fetch(`/api/check-job-status/${jobId}`, {
+                        method: 'GET'
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        // Show detailed status information
+                        let statusMessage = `📋 Job Status Check for ${jobId}:\n\n`;
+                        statusMessage += `Status: ${result.status}\n`;
+                        statusMessage += `Progress: ${result.progress}%\n`;
+                        
+                        if (result.lastActivity) {
+                            statusMessage += `Last Activity: ${new Date(result.lastActivity).toLocaleString()}\n`;
+                        }
+                        
+                        if (result.result) {
+                            statusMessage += `Result: ${JSON.stringify(result.result, null, 2)}\n`;
+                        }
+                        
+                        if (result.error) {
+                            statusMessage += `Error: ${result.error}\n`;
+                        }
+                        
+                        if (result.recommendation) {
+                            statusMessage += `\n💡 Recommendation: ${result.recommendation}`;
+                        }
+
+                        // Show in a formatted alert with monospace font for better readability
+                        const alertDiv = document.createElement('div');
+                        alertDiv.innerHTML = `
+                            <div style="background: #1a1a1a; color: #00ff00; padding: 20px; border-radius: 8px; font-family: monospace; white-space: pre-wrap; max-height: 400px; overflow-y: auto; border: 1px solid #333;">
+                                ${statusMessage}
+                            </div>
+                            <div style="margin-top: 10px; text-align: right;">
+                                <button onclick="this.parentElement.parentElement.remove()" style="background: #333; color: white; border: 1px solid #555; padding: 5px 10px; border-radius: 4px; cursor: pointer;">Close</button>
+                            </div>
+                        `;
+                        alertDiv.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 10000; background: #2d2d2d; padding: 20px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); max-width: 80%; border: 1px solid #444;';
+                        document.body.appendChild(alertDiv);
+
+                        // Update job status if it's actually completed
+                        if (result.status === 'completed' && result.progress === 100) {
+                            // Remove from failed jobs list
+                            this.failedJobs = this.failedJobs.filter(job => job.id !== jobId);
+                            this.renderFailedJobs();
+                            this.showManualJobStatus(`✅ Job ${jobId} is actually completed! Removed from failed list.`, 'success');
+                        }
+                    } else {
+                        this.showManualJobStatus(`❌ Status check failed: ${result.error}`, 'error');
+                    }
+                } catch (error) {
+                    this.showManualJobStatus(`❌ Status check error: ${error.message}`, 'error');
+                } finally {
+                    // Restore button state
+                    const button = document.querySelector(`[onclick="dashboard.checkJobStatus('${jobId}')"]`);
+                    if (button) {
+                        button.disabled = false;
+                        button.innerHTML = '🔍 Check for Updates';
+                    }
                 }
             }
 

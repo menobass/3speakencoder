@@ -390,6 +390,78 @@ export class MongoVerifier {
   }
 
   /**
+   * Get detailed job status from MongoDB for verification
+   */
+  async getJobStatusUpdate(jobId: string): Promise<{
+    exists: boolean;
+    status: string | null;
+    assigned_to: string | null;
+    completed_at: Date | null;
+    created_at: Date | null;
+    last_pinged: Date | null;
+    progress: any;
+    result: any;
+    error_message: string | null;
+    metadata: any;
+  }> {
+    if (!this.isEnabled()) {
+      throw new Error('MongoDB verification not enabled - cannot check job status');
+    }
+
+    try {
+      logger.info(`🔍 STATUS_CHECK: Querying MongoDB for job ${jobId} current status...`);
+      
+      const job = await this.jobs!.findOne({ id: jobId });
+      
+      if (!job) {
+        logger.info(`❌ Job ${jobId} not found in MongoDB database`);
+        return {
+          exists: false,
+          status: null,
+          assigned_to: null,
+          completed_at: null,
+          created_at: null,
+          last_pinged: null,
+          progress: null,
+          result: null,
+          error_message: null,
+          metadata: null
+        };
+      }
+
+      logger.info(`✅ Found job ${jobId} in MongoDB:`);
+      logger.info(`   📊 Status: ${job.status}`);
+      logger.info(`   👤 Assigned to: ${job.assigned_to || 'unassigned'}`);
+      logger.info(`   📅 Last pinged: ${job.last_pinged || 'never'}`);
+      
+      if ((job as any).result?.cid) {
+        logger.info(`   🎬 Result CID: ${(job as any).result.cid}`);
+      }
+      
+      if ((job as any).progress?.pct) {
+        logger.info(`   📈 Progress: ${(job as any).progress.pct}%`);
+      }
+
+      return {
+        exists: true,
+        status: job.status || null,
+        assigned_to: job.assigned_to || null,
+        completed_at: job.completed_at || null,
+        created_at: job.created_at || null,
+        last_pinged: job.last_pinged || null,
+        progress: (job as any).progress || null,
+        result: (job as any).result || null,
+        error_message: (job as any).error_message || null,
+        metadata: (job as any).metadata || null
+      };
+
+    } catch (error) {
+      logger.error(`❌ Failed to get job status for ${jobId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Health check for MongoDB connection
    */
   async healthCheck(): Promise<boolean> {

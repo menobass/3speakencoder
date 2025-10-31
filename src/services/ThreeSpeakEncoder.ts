@@ -1614,4 +1614,108 @@ export class ThreeSpeakEncoder {
       return false;
     }
   }
+
+  /**
+   * Check MongoDB for real-time job status updates
+   */
+  async checkJobStatusUpdate(jobId: string): Promise<any> {
+    if (!this.mongoVerifier.isEnabled()) {
+      throw new Error('Job status updates require MongoDB access - only available for 3Speak infrastructure nodes');
+    }
+
+    logger.info(`🔍 CHECKING_UPDATES: Getting real-time status for job ${jobId} from MongoDB...`);
+    
+    try {
+      const statusUpdate = await this.mongoVerifier.getJobStatusUpdate(jobId);
+      
+      if (!statusUpdate.exists) {
+        logger.warn(`❌ Job ${jobId} not found in MongoDB - may have been deleted`);
+        return {
+          found: false,
+          status: 'not_found',
+          message: 'Job not found in database - may have been deleted',
+          timestamp: new Date().toISOString()
+        };
+      }
+
+      // Analyze the status and provide helpful context
+      let analysis = '';
+      let recommendation = '';
+      
+      switch (statusUpdate.status) {
+        case 'complete':
+          analysis = '✅ Job completed successfully';
+          recommendation = statusUpdate.result?.cid 
+            ? `Video is published with CID: ${statusUpdate.result.cid}` 
+            : 'Job marked complete but no CID found - may need investigation';
+          break;
+          
+        case 'running':
+        case 'assigned':
+          const assignedTo = statusUpdate.assigned_to || 'unknown encoder';
+          analysis = `🔄 Job is currently being processed by: ${assignedTo}`;
+          recommendation = 'Wait for completion or check if encoder is stuck';
+          break;
+          
+        case 'failed':
+          analysis = '❌ Job failed in database';
+          recommendation = 'Safe to retry or force process if needed';
+          break;
+          
+        case 'pending':
+        case 'queued':
+          analysis = '⏳ Job is waiting to be processed';
+          recommendation = 'Job should be picked up automatically by available encoders';
+          break;
+          
+        default:
+          analysis = `❓ Unknown status: ${statusUpdate.status}`;
+          recommendation = 'Manual investigation may be required';
+      }
+
+      // Check if job has been recently active
+      const lastPing = statusUpdate.last_pinged ? new Date(statusUpdate.last_pinged) : null;
+      const now = new Date();
+      const timeSinceLastPing = lastPing ? Math.floor((now.getTime() - lastPing.getTime()) / 60000) : null;
+      
+      let activityStatus = '';
+      if (lastPing && timeSinceLastPing !== null) {
+        if (timeSinceLastPing < 5) {
+          activityStatus = '🟢 Recently active (last ping < 5 min ago)';
+        } else if (timeSinceLastPing < 30) {
+          activityStatus = '🟡 Moderately active (last ping < 30 min ago)';
+        } else {
+          activityStatus = `🔴 Stale (last ping ${timeSinceLastPing} minutes ago)`;
+        }
+      } else {
+        activityStatus = '⚫ No recent activity recorded';
+      }
+
+      const result = {
+        found: true,
+        status: statusUpdate.status,
+        assigned_to: statusUpdate.assigned_to,
+        analysis,
+        recommendation,
+        activity_status: activityStatus,
+        last_pinged: statusUpdate.last_pinged,
+        completed_at: statusUpdate.completed_at,
+        progress: statusUpdate.progress,
+        result: statusUpdate.result,
+        error_message: statusUpdate.error_message,
+        metadata: statusUpdate.metadata,
+        timestamp: new Date().toISOString()
+      };
+
+      logger.info(`📋 STATUS_UPDATE: ${analysis}`);
+      logger.info(`💡 RECOMMENDATION: ${recommendation}`);
+      logger.info(`📊 ACTIVITY: ${activityStatus}`);
+      
+      return result;
+
+    } catch (error) {
+      logger.error(`❌ Failed to check job status update for ${jobId}:`, error);
+      throw error;
+    }
+  }
 }

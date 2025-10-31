@@ -228,6 +228,47 @@ export class DashboardService {
       }
     });
 
+    // Job status update endpoint - check MongoDB for real job status
+    this.app.post('/api/check-job-status', express.json(), async (req, res) => {
+      const { jobId } = req.body;
+      
+      // 🔒 SECURITY: Validate job ID format (same as force processing)
+      if (!jobId) {
+        return res.status(400).json({ error: 'Job ID is required' });
+      }
+      
+      if (typeof jobId !== 'string' || jobId.length < 10 || jobId.length > 100) {
+        return res.status(400).json({ error: 'Invalid job ID format' });
+      }
+      
+      // 🔒 SECURITY: Basic sanitization - prevent injection attacks
+      const sanitizedJobId = jobId.replace(/[^a-zA-Z0-9\-_]/g, '');
+      if (sanitizedJobId !== jobId) {
+        return res.status(400).json({ error: 'Job ID contains invalid characters' });
+      }
+      
+      try {
+        if (this.encoder) {
+          const statusUpdate = await this.encoder.checkJobStatusUpdate(jobId);
+          return res.json(statusUpdate);
+        } else {
+          return res.status(503).json({ error: 'Encoder not available' });
+        }
+      } catch (error) {
+        logger.error('Failed to check job status:', error);
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        
+        // Check if it's a MongoDB access error
+        if (errorMsg.includes('MongoDB access') || errorMsg.includes('not enabled')) {
+          return res.status(403).json({ 
+            error: 'Job status updates require MongoDB access - only available for 3Speak infrastructure nodes' 
+          });
+        }
+        
+        return res.status(500).json({ error: errorMsg });
+      }
+    });
+
     // Manual job completion endpoint - for jobs that are processed but failed to report
     this.app.post('/api/manual-complete', express.json(), async (req, res) => {
       const { jobId, result } = req.body;
