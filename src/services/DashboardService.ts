@@ -229,8 +229,8 @@ export class DashboardService {
     });
 
     // Job status update endpoint - check MongoDB for real job status
-    this.app.post('/api/check-job-status', express.json(), async (req, res) => {
-      const { jobId } = req.body;
+    this.app.get('/api/check-job-status/:jobId', async (req, res) => {
+      const { jobId } = req.params;
       
       // 🔒 SECURITY: Validate job ID format (same as force processing)
       if (!jobId) {
