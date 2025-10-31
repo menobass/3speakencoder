@@ -325,6 +325,10 @@ NODE_NAME=3speak-encoder-node
 
 # Direct API disabled for gateway-only mode
 DIRECT_API_ENABLED=false
+
+# MongoDB Direct Verification (DISABLED by default)
+# 🚨 Only enable for 3Speak infrastructure nodes with database access
+MONGODB_VERIFICATION_ENABLED=false
 EOF
 
 elif [[ "$ENCODER_MODE" == "direct" ]]; then
@@ -365,6 +369,10 @@ NODE_NAME=3speak-encoder-node
 DIRECT_API_ENABLED=true
 DIRECT_API_PORT=3002
 DIRECT_API_KEY=$API_KEY
+
+# MongoDB Direct Verification (DISABLED by default)
+# 🚨 Only enable for 3Speak infrastructure nodes with database access
+MONGODB_VERIFICATION_ENABLED=false
 EOF
 
 else
@@ -409,6 +417,10 @@ NODE_NAME=3speak-encoder-node
 DIRECT_API_ENABLED=true
 DIRECT_API_PORT=3002
 DIRECT_API_KEY=$API_KEY
+
+# MongoDB Direct Verification (DISABLED by default)
+# 🚨 Only enable for 3Speak infrastructure nodes with database access
+MONGODB_VERIFICATION_ENABLED=false
 EOF
 
 fi

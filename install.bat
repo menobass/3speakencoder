@@ -178,6 +178,10 @@ if "%ENCODER_MODE%"=="gateway" (
     echo # ⚠️  This is NOT your Hive key - it's for encoder authentication only
     echo # ✅ Keep this secret and backed up - losing it creates a "new encoder"
     echo.
+    echo # MongoDB Direct Verification ^(DISABLED by default^)
+    echo # 🚨 Only enable for 3Speak infrastructure nodes with database access
+    echo MONGODB_VERIFICATION_ENABLED=false
+    echo.
     echo # Logging
     echo LOG_LEVEL=info
     ) > .env
@@ -200,6 +204,10 @@ if "%ENCODER_MODE%"=="gateway" (
     echo # ⚠️  This is NOT your Hive key - it's for encoder authentication only
     echo # ✅ Keep this secret and backed up - losing it creates a "new encoder"
     echo.
+    echo # MongoDB Direct Verification ^(DISABLED by default^)
+    echo # 🚨 Only enable for 3Speak infrastructure nodes with database access
+    echo MONGODB_VERIFICATION_ENABLED=false
+    echo.
     echo # Logging
     echo LOG_LEVEL=info
     ) > .env
@@ -221,6 +229,10 @@ if "%ENCODER_MODE%"=="gateway" (
     echo ENCODER_PRIVATE_KEY=%ENCODER_PRIVATE_KEY%
     echo # ⚠️  This is NOT your Hive key - it's for encoder authentication only
     echo # ✅ Keep this secret and backed up - losing it creates a "new encoder"
+    echo.
+    echo # MongoDB Direct Verification ^(DISABLED by default^)
+    echo # 🚨 Only enable for 3Speak infrastructure nodes with database access
+    echo MONGODB_VERIFICATION_ENABLED=false
     echo.
     echo # Logging
     echo LOG_LEVEL=info

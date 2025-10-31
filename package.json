@@ -44,6 +44,7 @@
     "ipfs-http-client": "^60.0.1",
     "key-did-provider-ed25519": "^4.0.2",
     "key-did-resolver": "^4.0.0",
+    "mongodb": "^4.17.0",
     "node-cron": "^4.2.1",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",

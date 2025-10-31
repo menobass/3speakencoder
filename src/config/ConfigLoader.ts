@@ -44,6 +44,13 @@ const ConfigSchema = z.object({
     enabled: z.boolean().default(false),
     port: z.number().default(3002),
     api_key: z.string().optional()
+  }).optional(),
+  mongodb: z.object({
+    enabled: z.boolean().default(false),
+    uri: z.string().optional(),
+    database_name: z.string().optional(),
+    connection_timeout: z.number().default(10000),
+    socket_timeout: z.number().default(30000)
   }).optional()
 });
 
@@ -90,6 +97,13 @@ export async function loadConfig(): Promise<EncoderConfig> {
         enabled: process.env.DIRECT_API_ENABLED === 'true',
         port: parseInt(process.env.DIRECT_API_PORT || '3002'),
         api_key: process.env.DIRECT_API_KEY
+      },
+      mongodb: {
+        enabled: process.env.MONGODB_VERIFICATION_ENABLED === 'true',
+        uri: process.env.MONGODB_URI,
+        database_name: process.env.DATABASE_NAME,
+        connection_timeout: parseInt(process.env.MONGODB_CONNECTION_TIMEOUT || '10000'),
+        socket_timeout: parseInt(process.env.MONGODB_SOCKET_TIMEOUT || '30000')
       }
     };
     
@@ -135,6 +149,13 @@ export function getDefaultConfig(): Partial<EncoderConfig> {
         enabled: false,
         port: 3002,
         api_key: undefined
+      },
+      mongodb: {
+        enabled: false,
+        uri: undefined,
+        database_name: undefined,
+        connection_timeout: 10000,
+        socket_timeout: 30000
       }
     };
 }

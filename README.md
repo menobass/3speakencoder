@@ -85,7 +85,8 @@ A modern, reliable replacement for the 3Speak video encoder with **dual-mode ope
 - 🏗️ **IPFS Cluster Support**: Optional cluster pinning to reduce main daemon load
 - 🏠 **Local Fallback Pinning**: 3Speak nodes can pin locally when supernode is overloaded
 - 📊 **Pin Database**: SQLite tracking of local pins with automatic sync service
-- 🚀 **Smart Retry System**: Cache results, skip wasteful re-processing on retries
+- �️ **MongoDB Verification**: Direct database fallback for 3Speak infrastructure nodes
+- �🚀 **Smart Retry System**: Cache results, skip wasteful re-processing on retries
 - 🔍 **Clean Error Logging**: No more buffer dumps, user-friendly error messages
 - 💪 **Production Ready**: 5-attempt retry logic with intelligent error handling
 - 📂 **Direct IPFS Integration**: Uploads directly to 3Speak's IPFS infrastructure
@@ -229,6 +230,16 @@ NODE_NAME=3speak-encoder-node
 DIRECT_API_ENABLED=false
 DIRECT_API_PORT=3002
 # DIRECT_API_KEY=generate-a-long-random-secure-key-here
+
+# MongoDB Direct Verification (DISABLED by default)
+# 🚨 CRITICAL: Only enable this for 3Speak infrastructure nodes
+# 🔐 This provides direct database verification when gateway APIs fail
+# 🔐 Requires MongoDB credentials - contact 3Speak team for access
+MONGODB_VERIFICATION_ENABLED=false
+# MONGODB_URI=mongodb://username:password@host:port/database
+# DATABASE_NAME=spk-encoder-gateway
+# MONGODB_CONNECTION_TIMEOUT=10000
+# MONGODB_SOCKET_TIMEOUT=30000
 ```
 
 ### IPFS Cluster Pinning (Optional)

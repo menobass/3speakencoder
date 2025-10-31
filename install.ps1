@@ -186,6 +186,10 @@ ENCODER_PRIVATE_KEY=$encoderPrivateKey
 # ⚠️  This is NOT your Hive key - it's for encoder authentication only
 # ✅ Keep this secret and backed up - losing it creates a "new encoder"
 
+# MongoDB Direct Verification (DISABLED by default)
+# 🚨 Only enable for 3Speak infrastructure nodes with database access
+MONGODB_VERIFICATION_ENABLED=false
+
 # Logging
 LOG_LEVEL=info
 "@
@@ -205,6 +209,10 @@ ENCODER_PRIVATE_KEY=$encoderPrivateKey
 # ⚠️  This is NOT your Hive key - it's for encoder authentication only
 # ✅ Keep this secret and backed up - losing it creates a "new encoder"
 
+# MongoDB Direct Verification (DISABLED by default)
+# 🚨 Only enable for 3Speak infrastructure nodes with database access
+MONGODB_VERIFICATION_ENABLED=false
+
 # Logging
 LOG_LEVEL=info
 "@
@@ -223,6 +231,10 @@ DIRECT_API_KEY=$apiKey
 ENCODER_PRIVATE_KEY=$encoderPrivateKey
 # ⚠️  This is NOT your Hive key - it's for encoder authentication only
 # ✅ Keep this secret and backed up - losing it creates a "new encoder"
+
+# MongoDB Direct Verification (DISABLED by default)
+# 🚨 Only enable for 3Speak infrastructure nodes with database access
+MONGODB_VERIFICATION_ENABLED=false
 
 # Logging
 LOG_LEVEL=info

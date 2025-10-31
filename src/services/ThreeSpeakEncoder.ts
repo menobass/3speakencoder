@@ -10,6 +10,7 @@ import { DirectApiService } from './DirectApiService.js';
 import { JobQueue } from './JobQueue.js';
 import { JobProcessor } from './JobProcessor.js';
 import { PendingPinService } from './PendingPinService.js';
+import { MongoVerifier } from './MongoVerifier.js';
 import cron from 'node-cron';
 import { randomUUID } from 'crypto';
 import { cleanErrorForLogging } from '../common/errorUtils.js';
@@ -24,6 +25,7 @@ export class ThreeSpeakEncoder {
   private directApi?: DirectApiService;
   private jobQueue: JobQueue;
   private pendingPinService: PendingPinService;
+  private mongoVerifier: MongoVerifier;
   private isRunning: boolean = false;
   private activeJobs: Map<string, any> = new Map();
   private gatewayFailureCount: number = 0;
@@ -40,6 +42,7 @@ export class ThreeSpeakEncoder {
     this.ipfs = new IPFSService(config);
     this.processor = new VideoProcessor(config, this.ipfs, dashboard);
     this.gateway = new GatewayClient(config);
+    this.mongoVerifier = new MongoVerifier(config);
     this.jobQueue = new JobQueue(
       config.encoder?.max_concurrent_jobs || 1,
       5, // maxRetries (increased for gateway server issues)
@@ -80,6 +83,19 @@ export class ThreeSpeakEncoder {
       
       await this.gateway.initialize();
       logger.info('✅ Gateway client ready');
+
+      // Initialize MongoDB verifier (optional - will skip if disabled)
+      try {
+        await this.mongoVerifier.initialize();
+        if (this.mongoVerifier.isEnabled()) {
+          logger.info('✅ MongoDB direct verification ready');
+        } else {
+          logger.info('ℹ️ MongoDB direct verification disabled');
+        }
+      } catch (error) {
+        logger.warn('⚠️ MongoDB direct verification failed to initialize:', error);
+        logger.warn('🔄 Encoder will continue without MongoDB fallback');
+      }
       
       // Start DirectApiService if enabled
       if (this.directApi) {
@@ -181,6 +197,17 @@ export class ThreeSpeakEncoder {
     }
     
     this.activeJobs.clear();
+    
+    // Cleanup MongoDB verifier connection
+    if (this.mongoVerifier) {
+      try {
+        await this.mongoVerifier.cleanup();
+        logger.info('✅ MongoDB verifier cleanup completed');
+      } catch (error) {
+        logger.warn('⚠️ MongoDB verifier cleanup failed:', error);
+      }
+    }
+    
     logger.info('✅ Encoder stopped');
   }
 
@@ -428,8 +455,6 @@ export class ThreeSpeakEncoder {
       return; // No jobs available
     }
 
-    logger.info(`🚀 Starting job: ${job.id} (${job.type || 'gateway'})`);
-    
     try {
       if (job.type === 'direct') {
         // Process direct API job
@@ -635,12 +660,39 @@ export class ThreeSpeakEncoder {
         
       } catch (statusError) {
         logger.error(`❌ OWNERSHIP_VERIFICATION_FAILED: Cannot verify job ${jobId} ownership:`, statusError);
-        logger.warn(`🛡️ DEFENSIVE: This could indicate gateway API issues - proceeding with extreme caution`);
+        logger.warn(`🛡️ DEFENSIVE: This could indicate gateway API issues - attempting MongoDB direct verification`);
         logger.warn(`📊 TELEMETRY: Gateway getJobStatus API failure after successful acceptJob`);
         
-        // 🛡️ DEFENSIVE: If we can't verify ownership, we should be extra cautious
-        // Log this as a potential gateway inconsistency but continue since acceptJob() succeeded
-        logger.info(`⚠️ RISK_ASSESSMENT: Continuing since acceptJob() succeeded, but monitoring for conflicts`);
+        // 🛡️ NUCLEAR OPTION: MongoDB Direct Verification
+        if (this.mongoVerifier.isEnabled()) {
+          try {
+            logger.info(`🚀 MONGODB_FALLBACK: Gateway failed, checking MongoDB directly for job ${jobId}`);
+            const mongoResult = await this.mongoVerifier.verifyJobOwnership(jobId, ourDID);
+            
+            if (mongoResult.jobExists) {
+              if (mongoResult.isOwned) {
+                logger.info(`✅ MONGODB_CONFIRMED: Job ${jobId} ownership verified via MongoDB - gateway was wrong!`);
+                logger.info(`📊 EVIDENCE: MongoDB shows assigned_to=${mongoResult.actualOwner}, status=${mongoResult.status}`);
+                logger.info(`🎯 CONCLUSION: Proceeding with job processing - MongoDB is ground truth`);
+              } else {
+                logger.error(`🚨 MONGODB_CONFLICT: Job ${jobId} assigned to different encoder in MongoDB: ${mongoResult.actualOwner}`);
+                logger.error(`🛑 ABORTING: MongoDB confirms job belongs to another encoder`);
+                this.jobQueue.failJob(jobId, `MongoDB verification failed: job assigned to ${mongoResult.actualOwner}`, false);
+                return;
+              }
+            } else {
+              logger.error(`🤔 MONGODB_NOT_FOUND: Job ${jobId} doesn't exist in MongoDB - may be invalid job ID`);
+              logger.warn(`⚠️ PROCEEDING_WITH_CAUTION: Neither gateway nor MongoDB can confirm job ownership`);
+            }
+          } catch (mongoError) {
+            logger.error(`❌ MONGODB_VERIFICATION_FAILED: ${mongoError}`);
+            logger.warn(`🆘 ALL_VERIFICATION_FAILED: Both gateway API and MongoDB verification failed`);
+            logger.info(`⚠️ RISK_ASSESSMENT: Continuing since acceptJob() succeeded, but this is high risk`);
+          }
+        } else {
+          logger.warn(`⚠️ MONGODB_UNAVAILABLE: Direct verification disabled - proceeding with caution`);
+          logger.info(`⚠️ RISK_ASSESSMENT: Continuing since acceptJob() succeeded, but monitoring for conflicts`);
+        }
       }
       
       // 🛡️ DEFENSIVE: Additional safety check - verify we're not processing someone else's job
