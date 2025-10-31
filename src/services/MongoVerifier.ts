@@ -334,7 +334,7 @@ export class MongoVerifier {
 
     try {
       logger.info(`🚀 FORCE_COMPLETE: Updating job ${jobId} directly in MongoDB`);
-      logger.info(`📊 Setting status=complete, result.cid=${result.cid}`);
+      logger.info(`📊 Setting status=complete, result={cid: ${result.cid}, message: 'Force processed successfully'}`);
       
       const updateResult = await this.jobs!.updateOne(
         { id: jobId },
@@ -343,7 +343,10 @@ export class MongoVerifier {
             status: 'complete',
             completed_at: new Date(),
             last_pinged: new Date(),
-            'result.cid': result.cid,
+            result: {
+              cid: result.cid,
+              message: 'Force processed successfully'
+            },
             'progress.pct': 100,
             'progress.download_pct': 100
           }
