@@ -321,7 +321,59 @@ export class IPFSService {
       try {
         logger.info(`📤 Uploading directory ${dirPath} to 3Speak IPFS (attempt ${attempt}/${maxRetries})`);
         
+        // 📊 TIMING: Measure actual upload duration
+        const uploadStartTime = Date.now();
         const result = await this.performDirectoryUpload(dirPath);
+        const uploadDuration = Date.now() - uploadStartTime;
+        
+        // 📊 UPLOAD ANALYTICS: Show real timing and speed
+        logger.info(`⏱️ Upload completed in ${(uploadDuration / 1000).toFixed(1)}s for directory ${dirPath}`);
+        
+        // Calculate directory size for speed analysis
+        try {
+          const fs = await import('fs/promises');
+          const path = await import('path');
+          const files = await this.getAllFiles(dirPath);
+          let totalSize = 0;
+          for (const filePath of files) {
+            const stats = await fs.stat(filePath);
+            totalSize += stats.size;
+          }
+          const sizeMB = totalSize / (1024 * 1024);
+          const speedMbps = (totalSize * 8) / (1024 * 1024) / (uploadDuration / 1000); // Megabits per second
+          
+          logger.info(`📊 UPLOAD STATS: ${sizeMB.toFixed(1)}MB uploaded in ${(uploadDuration/1000).toFixed(1)}s (${speedMbps.toFixed(1)} Mbps)`);
+          
+          // 🚨 COMPREHENSIVE UPLOAD ANALYSIS
+          const isLargeUpload = sizeMB > 100;
+          const isInstantUpload = uploadDuration < 1000; // Under 1 second
+          const isSuperFastUpload = uploadDuration < 5000 && sizeMB > 50; // >50MB in <5 seconds
+          const theoreticalMaxSpeed = 1000; // 1Gbps in Mbps (very generous)
+          
+          if (isInstantUpload && sizeMB > 10) {
+            logger.warn(`🚨 INSTANT UPLOAD DETECTED: ${sizeMB.toFixed(1)}MB in ${uploadDuration}ms - This is IMPOSSIBLE for real upload!`);
+            logger.warn(`🔍 DIAGNOSIS: Content was already cached/deduplicated on IPFS node`);
+            logger.warn(`📋 IPFS deduplication means identical content returns existing hash instantly`);
+            logger.info(`✅ This is normal IPFS behavior - your content was uploaded previously and is being reused`);
+          } else if (isSuperFastUpload) {
+            logger.warn(`🚨 SUSPICIOUSLY FAST UPLOAD: ${sizeMB.toFixed(1)}MB in ${(uploadDuration/1000).toFixed(1)}s (${speedMbps.toFixed(1)} Mbps)`);
+            if (speedMbps > theoreticalMaxSpeed) {
+              logger.warn(`🔍 DIAGNOSIS: Speed exceeds theoretical maximum (${theoreticalMaxSpeed} Mbps) - likely deduplication`);
+              logger.info(`📋 IPFS probably found identical content and returned cached hash`);
+            } else {
+              logger.warn(`🔍 This could indicate: very fast connection, local network, or partial deduplication`);
+            }
+          } else if (isLargeUpload) {
+            logger.info(`📈 NORMAL LARGE UPLOAD: ${sizeMB.toFixed(1)}MB in ${(uploadDuration/1000).toFixed(1)}s (${speedMbps.toFixed(1)} Mbps)`);
+            if (speedMbps > 100) {
+              logger.info(`🚀 Excellent upload speed! Your connection is very fast.`);
+            }
+          } else {
+            logger.info(`📤 Small file upload: ${sizeMB.toFixed(1)}MB in ${(uploadDuration/1000).toFixed(1)}s (${speedMbps.toFixed(1)} Mbps)`);
+          }
+        } catch (sizeError) {
+          logger.warn(`⚠️ Could not calculate upload speed: ${sizeError}`);
+        }
         
         // � PINATA-STYLE: Only pin if explicitly requested
         if (pin) {
@@ -436,7 +488,16 @@ export class IPFSService {
     
     logger.info(`⏱️ Directory upload timeout: ${Math.floor(timeoutMs / 1000)}s (size: ${(totalSize/1024/1024).toFixed(1)}MB, max: ${maxTimeout/1000}s)`);
     
+    // 📊 Track HTTP request timing separately from our upload timing
+    let httpStartTime: number;
+    let httpEndTime: number;
+    let bytesUploaded = 0;
+    let progressEvents = 0;
+    
     try {
+      logger.info(`🌐 Starting HTTP POST to ${threeSpeakIPFS}/api/v0/add...`);
+      httpStartTime = Date.now();
+      
       const response = await axios.default.post(`${threeSpeakIPFS}/api/v0/add?wrap-with-directory=true&recursive=true`, form, {
         headers: {
           ...form.getHeaders(),
@@ -447,14 +508,35 @@ export class IPFSService {
         responseType: 'text', // 🚨 FIX: Ensure response is treated as text, not binary
         validateStatus: (status) => status < 400,
         onUploadProgress: (progressEvent) => {
+          progressEvents++;
+          bytesUploaded = progressEvent.loaded;
+          
           if (progressEvent.total) {
             const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
             if (percent % 25 === 0) { // Log every 25%
-              logger.info(`📦 Directory upload progress: ${percent}% (${(progressEvent.loaded / 1024 / 1024).toFixed(1)}MB)`);
+              const currentTime = Date.now();
+              const timeElapsed = currentTime - httpStartTime;
+              const currentSpeed = (progressEvent.loaded * 8) / (1024 * 1024) / (timeElapsed / 1000); // Mbps
+              logger.info(`📦 Directory upload progress: ${percent}% (${(progressEvent.loaded / 1024 / 1024).toFixed(1)}MB) - ${currentSpeed.toFixed(1)} Mbps real-time`);
             }
           }
         }
       });
+      
+      httpEndTime = Date.now();
+      const httpDuration = httpEndTime - httpStartTime;
+      
+      // 📊 HTTP REQUEST ANALYSIS
+      logger.info(`🌐 HTTP request completed in ${httpDuration}ms (${progressEvents} progress events, ${(bytesUploaded/1024/1024).toFixed(1)}MB uploaded)`);
+      
+      if (httpDuration < 1000 && totalSize > 50 * 1024 * 1024) { // <1s for >50MB
+        logger.warn(`🚨 HTTP DEDUPLICATION DETECTED: ${(totalSize/1024/1024).toFixed(1)}MB request completed in ${httpDuration}ms`);
+        logger.info(`📋 IPFS found identical content and returned cached result - this is normal and efficient!`);
+      } else if (progressEvents === 0) {
+        logger.warn(`🚨 NO PROGRESS EVENTS: Upload completed without progress tracking - possible instant deduplication`);
+      } else {
+        logger.info(`✅ HTTP upload appears to be genuine: ${progressEvents} progress events over ${httpDuration}ms`);
+      }
       
       // Parse response - should be newline-delimited JSON
       // 🚨 FIX: Ensure we have text data, not binary
@@ -521,6 +603,28 @@ export class IPFSService {
       }
       
       logger.info(`✅ Directory uploaded successfully: ${directoryHash}`);
+      
+      // 📊 COMPREHENSIVE UPLOAD SUMMARY
+      const httpSpeed = (totalSize * 8) / (1024 * 1024) / (httpDuration / 1000); // Mbps
+      const isDeduplicationLikely = httpDuration < 1000 && totalSize > 10 * 1024 * 1024; // <1s for >10MB
+      
+      logger.info(`📋 UPLOAD SUMMARY:`);
+      logger.info(`   📦 Total Size: ${(totalSize/1024/1024).toFixed(1)}MB (${files.length} files)`);
+      logger.info(`   ⏱️ HTTP Duration: ${httpDuration}ms`);
+      logger.info(`   📊 HTTP Speed: ${httpSpeed.toFixed(1)} Mbps`);
+      logger.info(`   📈 Progress Events: ${progressEvents}`);
+      logger.info(`   🎯 Final Hash: ${directoryHash}`);
+      
+      if (isDeduplicationLikely) {
+        logger.info(`   🔄 LIKELY DEDUPLICATION: Content was already on IPFS, returned cached hash`);
+        logger.info(`   ✅ This is efficient - your content is available immediately!`);
+      } else if (httpSpeed > 500) {
+        logger.info(`   🚀 EXCELLENT SPEED: Very fast upload connection`);
+      } else if (httpSpeed > 100) {
+        logger.info(`   📈 GOOD SPEED: Above-average upload performance`);
+      } else {
+        logger.info(`   📊 NORMAL SPEED: Standard upload performance`);
+      }
       
       // Clean up all file streams after successful upload
       cleanupAllStreams();
