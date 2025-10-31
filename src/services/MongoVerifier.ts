@@ -333,6 +333,25 @@ export class MongoVerifier {
     }
 
     try {
+      // 🔒 SECURITY CHECK: Verify job is not already complete before updating
+      logger.info(`🔒 SECURITY: Verifying job ${jobId} is not already complete...`);
+      const existingJob = await this.jobs!.findOne({ id: jobId });
+      
+      if (!existingJob) {
+        throw new Error(`Job ${jobId} not found in database`);
+      }
+      
+      if (existingJob.status === 'complete') {
+        logger.warn(`🚨 SECURITY: Attempted to force complete already completed job ${jobId}`);
+        logger.info(`📊 Current status: ${existingJob.status}`);
+        if (existingJob.result?.cid) {
+          logger.info(`📹 Existing CID: ${existingJob.result.cid}`);
+        }
+        logger.info(`🛡️ Blocking duplicate completion to prevent abuse`);
+        throw new Error(`Job ${jobId} is already complete - cannot complete already finished jobs`);
+      }
+      
+      logger.info(`✅ SECURITY: Job ${jobId} status is '${existingJob.status}' - safe to proceed`);
       logger.info(`🚀 FORCE_COMPLETE: Updating job ${jobId} directly in MongoDB`);
       logger.info(`📊 Setting status=complete, result={cid: ${result.cid}, message: 'Force processed successfully'}`);
       

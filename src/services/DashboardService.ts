@@ -36,6 +36,9 @@ export class DashboardService {
   private failedJobs: any[] = [];
   private availableJobs: any[] = [];
   private gatewayConnected: boolean = false;
+  
+  // 🔒 SECURITY: Rate limiting for force processing
+  private forceProcessAttempts: Map<string, number[]> = new Map();
 
   constructor(port: number = 3001) {
     this.port = port;
@@ -142,9 +145,45 @@ export class DashboardService {
     // Force processing endpoint - bypasses gateway completely
     this.app.post('/api/force-process-job', express.json(), async (req, res) => {
       const { jobId } = req.body;
+      
+      // 🔒 SECURITY: Validate job ID format
       if (!jobId) {
         return res.status(400).json({ error: 'Job ID is required' });
       }
+      
+      if (typeof jobId !== 'string' || jobId.length < 10 || jobId.length > 100) {
+        return res.status(400).json({ error: 'Invalid job ID format' });
+      }
+      
+      // 🔒 SECURITY: Basic sanitization - prevent injection attacks
+      const sanitizedJobId = jobId.replace(/[^a-zA-Z0-9\-_]/g, '');
+      if (sanitizedJobId !== jobId) {
+        return res.status(400).json({ error: 'Job ID contains invalid characters' });
+      }
+      
+      // 🔒 SECURITY: Rate limiting - max 3 force processing attempts per hour per IP
+      const clientIP = req.ip || req.connection.remoteAddress || 'unknown';
+      const now = Date.now();
+      const hourAgo = now - (60 * 60 * 1000);
+      
+      // Clean old attempts and get current attempts for this IP
+      if (this.forceProcessAttempts.has(clientIP)) {
+        const attempts = this.forceProcessAttempts.get(clientIP)!.filter(time => time > hourAgo);
+        this.forceProcessAttempts.set(clientIP, attempts);
+        
+        if (attempts.length >= 3) {
+          logger.warn(`🚨 RATE_LIMIT: IP ${clientIP} exceeded force processing limit (3/hour)`);
+          return res.status(429).json({ 
+            error: 'Rate limit exceeded. Maximum 3 force processing attempts per hour.' 
+          });
+        }
+      }
+      
+      // Record this attempt
+      const attempts = this.forceProcessAttempts.get(clientIP) || [];
+      attempts.push(now);
+      this.forceProcessAttempts.set(clientIP, attempts);
+      
       try {
         if (this.encoder) {
           await this.encoder.forceProcessJob(jobId);

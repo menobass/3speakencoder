@@ -562,6 +562,10 @@ export class ThreeSpeakEncoder {
     const ourDID = this.identity.getDIDKey();
     let ownershipCheckInterval: NodeJS.Timeout | null = null;
     
+    // 🛡️ Variables for MongoDB fallback (scope accessible from catch blocks)
+    let completedResult: any = null;
+    let masterCID: string | null = null;
+    
     this.activeJobs.set(jobId, job);
     
     // Check if this job has cached results from previous attempt
@@ -792,6 +796,10 @@ export class ThreeSpeakEncoder {
         throw new Error('No master playlist output received from video processor');
       }
       
+      // 🛡️ Capture values for MongoDB fallback in outer scope
+      completedResult = result;
+      masterCID = masterOutput.ipfsHash;
+      
       const gatewayResult = {
         ipfs_hash: masterOutput.ipfsHash,
         master_playlist: masterOutput.uri
@@ -877,6 +885,50 @@ export class ThreeSpeakEncoder {
 
     } catch (error) {
       logger.error(`❌ Gateway job ${jobId} failed:`, cleanErrorForLogging(error));
+      
+      // 🛡️ MONGODB FALLBACK: If we have the CID and MongoDB access, try to complete directly
+      const gatewayErrorMessage = error instanceof Error ? error.message : String(error);
+      const isRaceCondition = gatewayErrorMessage.includes('no longer available') || 
+                             gatewayErrorMessage.includes('already assigned') ||
+                             gatewayErrorMessage.includes('not assigned');
+      
+      // Only use MongoDB fallback if:
+      // 1. We successfully processed the video (have CID)
+      // 2. MongoDB verification is enabled  
+      // 3. This is NOT a race condition (job stolen by another encoder)
+      // 4. Gateway completion failed for infrastructure reasons
+      if (masterCID && this.mongoVerifier?.isEnabled() && !isRaceCondition) {
+        logger.warn(`🔄 GATEWAY_COMPLETION_FAILED: Attempting MongoDB fallback for job ${jobId}`);
+        logger.info(`🎯 Video processing succeeded, CID: ${masterCID}`);
+        logger.info(`🛡️ Content is safely uploaded and pinned - attempting direct database completion`);
+        
+        try {
+          await this.mongoVerifier.forceCompleteJob(jobId, { cid: masterCID });
+          
+          // Mark as complete in local systems
+          this.jobQueue.completeJob(jobId, completedResult);
+          if (this.dashboard) {
+            this.dashboard.completeJob(jobId, completedResult);
+          }
+          
+          logger.info(`✅ MONGODB_FALLBACK_SUCCESS: Job ${jobId} completed via direct database update`);
+          logger.info(`🎊 Video is now marked as complete despite gateway failure`);
+          logger.info(`📊 FALLBACK_STATS: Gateway failed, MongoDB succeeded - video delivered to users`);
+          
+          return; // Success! Exit without failing the job
+          
+        } catch (mongoError) {
+          logger.error(`❌ MONGODB_FALLBACK_FAILED: Could not complete job ${jobId} via database:`, mongoError);
+          logger.warn(`💔 Both gateway AND MongoDB completion failed - job will be marked as failed`);
+          // Continue to normal error handling
+        }
+      } else if (isRaceCondition) {
+        logger.info(`🏃‍♂️ RACE_CONDITION: Skipping MongoDB fallback - job ${jobId} belongs to another encoder`);
+      } else if (!masterCID) {
+        logger.warn(`🚨 NO_CID: Cannot use MongoDB fallback - video processing did not complete successfully`);
+      } else if (!this.mongoVerifier?.isEnabled()) {
+        logger.info(`🔒 MONGODB_DISABLED: MongoDB fallback not available - continuing with normal error handling`);
+      }
       
       // Determine if this is a retryable error and handle race conditions
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -1093,6 +1145,10 @@ export class ThreeSpeakEncoder {
   private async processJob(job: VideoJob): Promise<void> {
     const jobId = job.id;
     
+    // 🛡️ Variables for MongoDB fallback (scope accessible from catch blocks)  
+    let completedResult: any = null;
+    let masterCID: string | null = null;
+    
     try {
       // Accept the job
       await this.gateway.acceptJob(jobId);
@@ -1153,6 +1209,10 @@ export class ThreeSpeakEncoder {
         throw new Error('No master playlist output received from video processor');
       }
       
+      // 🛡️ Capture values for MongoDB fallback in outer scope
+      completedResult = result;
+      masterCID = masterOutput.ipfsHash || null;
+      
       const gatewayResult = {
         ipfs_hash: masterOutput.ipfsHash,
         master_playlist: masterOutput.uri
@@ -1167,6 +1227,44 @@ export class ThreeSpeakEncoder {
 
     } catch (error) {
       logger.error(`❌ Job ${jobId} failed:`, cleanErrorForLogging(error));
+      
+      // 🛡️ MONGODB FALLBACK: If we have the CID and MongoDB access, try to complete directly
+      const gatewayErrorMessage = error instanceof Error ? error.message : String(error);
+      const isRaceCondition = gatewayErrorMessage.includes('no longer available') || 
+                             gatewayErrorMessage.includes('already assigned') ||
+                             gatewayErrorMessage.includes('not assigned');
+      
+      // Only use MongoDB fallback if:
+      // 1. We successfully processed the video (have CID)
+      // 2. MongoDB verification is enabled  
+      // 3. This is NOT a race condition (job stolen by another encoder)
+      // 4. Gateway completion failed for infrastructure reasons
+      if (masterCID && this.mongoVerifier?.isEnabled() && !isRaceCondition) {
+        logger.warn(`🔄 GATEWAY_COMPLETION_FAILED: Attempting MongoDB fallback for job ${jobId}`);
+        logger.info(`🎯 Video processing succeeded, CID: ${masterCID}`);
+        logger.info(`🛡️ Content is safely uploaded and pinned - attempting direct database completion`);
+        
+        try {
+          await this.mongoVerifier.forceCompleteJob(jobId, { cid: masterCID });
+          
+          logger.info(`✅ MONGODB_FALLBACK_SUCCESS: Job ${jobId} completed via direct database update`);
+          logger.info(`🎊 Video is now marked as complete despite gateway failure`);
+          logger.info(`📊 FALLBACK_STATS: Gateway failed, MongoDB succeeded - video delivered to users`);
+          
+          return; // Success! Exit without failing the job
+          
+        } catch (mongoError) {
+          logger.error(`❌ MONGODB_FALLBACK_FAILED: Could not complete job ${jobId} via database:`, mongoError);
+          logger.warn(`💔 Both gateway AND MongoDB completion failed - job will be marked as failed`);
+          // Continue to normal error handling
+        }
+      } else if (isRaceCondition) {
+        logger.info(`🏃‍♂️ RACE_CONDITION: Skipping MongoDB fallback - job ${jobId} belongs to another encoder`);
+      } else if (!masterCID) {
+        logger.warn(`🚨 NO_CID: Cannot use MongoDB fallback - video processing did not complete successfully`);
+      } else if (!this.mongoVerifier?.isEnabled()) {
+        logger.info(`🔒 MONGODB_DISABLED: MongoDB fallback not available - continuing with normal error handling`);
+      }
       
       try {
         await this.gateway.failJob(jobId, {
@@ -1278,11 +1376,25 @@ export class ThreeSpeakEncoder {
       logger.info(`   📥 Input: ${jobDoc.input.uri}`);
       logger.info(`   💾 Size: ${(jobDoc.input.size / 1024 / 1024).toFixed(2)} MB`);
 
-      // Step 2: Check if already completed
-      if (jobDoc.status === 'complete' && jobDoc.result?.cid) {
-        logger.warn(`⚠️ Job ${jobId} is already complete with CID: ${jobDoc.result.cid}`);
-        logger.info(`💡 Video should already be published`);
-        return;
+      // Step 2: 🔒 SECURITY CHECK - Prevent processing completed jobs
+      if (jobDoc.status === 'complete') {
+        logger.warn(`🚨 SECURITY: Rejecting force processing request - job ${jobId} is already complete`);
+        logger.info(`📊 Job status: ${jobDoc.status}`);
+        if (jobDoc.result?.cid) {
+          logger.info(`📹 Video CID: ${jobDoc.result.cid}`);
+          logger.info(`✅ Video is already published and available`);
+        }
+        if (jobDoc.completed_at) {
+          logger.info(`⏰ Completed at: ${jobDoc.completed_at}`);
+        }
+        logger.info(`�️ This prevents spam/abuse of the force processing feature`);
+        throw new Error(`Job ${jobId} is already complete - cannot reprocess completed jobs`);
+      }
+      
+      // Additional security checks
+      if (jobDoc.status === 'deleted') {
+        logger.warn(`🚨 SECURITY: Job ${jobId} is marked as deleted - cannot force process`);
+        throw new Error(`Job ${jobId} has been deleted - cannot process deleted jobs`);
       }
 
       // Step 3: Force assign job to ourselves in database first (claim ownership)
