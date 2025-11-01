@@ -557,7 +557,7 @@ export class ThreeSpeakEncoder {
     }
   }
 
-  private async processGatewayJob(job: any): Promise<void> {
+  private async processGatewayJob(job: any, ownershipAlreadyConfirmed: boolean = false): Promise<void> {
     const jobId = job.id;
     const ourDID = this.identity.getDIDKey();
     let ownershipCheckInterval: NodeJS.Timeout | null = null;
@@ -584,42 +584,50 @@ export class ThreeSpeakEncoder {
     await this.updateDashboard();
     
     try {
-      // 🔍 SMART CLAIMING: Check if we need to claim the job first
-      let needsToClaim = true;
+      // 🔍 SMART CLAIMING: Skip ownership check if already confirmed
       let jobStatus: any;
       
-      try {
-        // Check current job status to see if we already own it
-        jobStatus = await this.gateway.getJobStatus(jobId);
-        if (jobStatus?.assigned_to === ourDID) {
-          logger.info(`✅ ALREADY_OWNED: Job ${jobId} is already assigned to us - no need to claim`);
-          needsToClaim = false;
-        } else if (!jobStatus?.assigned_to) {
-          logger.info(`🎯 NEEDS_CLAIMING: Job ${jobId} is unassigned - will claim it`);
-          needsToClaim = true;
-        } else {
-          logger.warn(`⚠️ OWNERSHIP_CONFLICT: Job ${jobId} is assigned to ${jobStatus.assigned_to}, not us`);
-          throw new Error(`Job ${jobId} is assigned to another encoder: ${jobStatus.assigned_to}`);
-        }
-      } catch (statusError) {
-        logger.warn(`⚠️ Could not check job status, will attempt to claim anyway:`, statusError);
-        needsToClaim = true; // Default to claiming if we can't check status
-      }
-      
-      // Only call acceptJob if we need to claim the job
-      if (needsToClaim) {
-        logger.info(`📞 CLAIMING: Calling acceptJob() for ${jobId}`);
-        await this.gateway.acceptJob(jobId);
-        logger.info(`✅ Successfully claimed gateway job: ${jobId}`);
-        
-        // Re-check status after claiming
-        jobStatus = await this.gateway.getJobStatus(jobId);
+      if (ownershipAlreadyConfirmed) {
+        logger.info(`✅ OWNERSHIP_PRECONFIRMED: Job ${jobId} ownership already verified - skipping all gateway checks`);
+        // Skip all gateway interactions and go straight to processing
       } else {
-        logger.info(`⏩ SKIP_CLAIMING: Job ${jobId} already owned, proceeding directly to processing`);
+        // 🔍 Check if we need to claim the job first
+        let needsToClaim = true;
+        
+        try {
+          // Check current job status to see if we already own it
+          jobStatus = await this.gateway.getJobStatus(jobId);
+          if (jobStatus?.assigned_to === ourDID) {
+            logger.info(`✅ ALREADY_OWNED: Job ${jobId} is already assigned to us - no need to claim`);
+            needsToClaim = false;
+          } else if (!jobStatus?.assigned_to) {
+            logger.info(`🎯 NEEDS_CLAIMING: Job ${jobId} is unassigned - will claim it`);
+            needsToClaim = true;
+          } else {
+            logger.warn(`⚠️ OWNERSHIP_CONFLICT: Job ${jobId} is assigned to ${jobStatus.assigned_to}, not us`);
+            throw new Error(`Job ${jobId} is assigned to another encoder: ${jobStatus.assigned_to}`);
+          }
+        } catch (statusError) {
+          logger.warn(`⚠️ Could not check job status, will attempt to claim anyway:`, statusError);
+          needsToClaim = true; // Default to claiming if we can't check status
+        }
+        
+        // Only call acceptJob if we need to claim the job
+        if (needsToClaim) {
+          logger.info(`📞 CLAIMING: Calling acceptJob() for ${jobId}`);
+          await this.gateway.acceptJob(jobId);
+          logger.info(`✅ Successfully claimed gateway job: ${jobId}`);
+          
+          // Re-check status after claiming
+          jobStatus = await this.gateway.getJobStatus(jobId);
+        } else {
+          logger.info(`⏩ SKIP_CLAIMING: Job ${jobId} already owned, proceeding directly to processing`);
+        }
       }
 
-      // 🔒 CRITICAL OWNERSHIP VALIDATION: Verify we own the job
-      try {
+      // 🔒 CRITICAL OWNERSHIP VALIDATION: Verify we own the job (skip if already confirmed)
+      if (!ownershipAlreadyConfirmed) {
+        try {
         jobStatus = await this.gateway.getJobStatus(jobId);
         logger.info(`🔍 Job ${jobId} status after accept: assigned_to=${jobStatus.assigned_to || 'null'}, status=${jobStatus.status || 'unknown'}`);
         
@@ -726,6 +734,7 @@ export class ThreeSpeakEncoder {
           logger.info(`⚠️ RISK_ASSESSMENT: Continuing since acceptJob() succeeded, but monitoring for conflicts`);
         }
       }
+      } // End of ownership validation check
       
       // 🛡️ DEFENSIVE: Additional safety check - verify we're not processing someone else's job
       // This catches race conditions that might have occurred after our ownership check
@@ -1489,8 +1498,8 @@ export class ThreeSpeakEncoder {
         logger.info(`🚀 Starting manual processing for job: ${jobId}`);
         this.activeJobs.set(jobId, job);
         
-        // Process the job directly instead of waiting for polling
-        await this.processGatewayJob(job);
+        // Process the job directly with ownership already confirmed
+        await this.processGatewayJob(job, true); // true = ownership already confirmed
       }
       
     } catch (error) {
