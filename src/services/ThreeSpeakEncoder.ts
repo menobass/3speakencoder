@@ -1612,11 +1612,44 @@ export class ThreeSpeakEncoder {
           return;
         }
         
-        // Create a job object and process it directly
-        const job = {
+        // 🔧 FIX: Get complete job details before processing
+        let jobDetails = null;
+        
+        // Try MongoDB first for complete job details
+        if (this.mongoVerifier.isEnabled()) {
+          try {
+            jobDetails = await this.mongoVerifier.getJobDetails(jobId);
+            logger.info(`📋 Got complete job details from MongoDB for ${jobId}`);
+          } catch (mongoError) {
+            logger.warn(`⚠️ Failed to get job details from MongoDB, trying gateway:`, mongoError);
+          }
+        }
+        
+        // Fallback to gateway if MongoDB fails
+        if (!jobDetails) {
+          try {
+            jobDetails = await this.gateway.getJobStatus(jobId);
+            logger.info(`📋 Got job details from gateway for ${jobId}`);
+          } catch (gatewayError) {
+            logger.error(`❌ Failed to get job details from gateway:`, gatewayError);
+          }
+        }
+        
+        // Create job object with complete details or minimal fallback
+        const job = jobDetails ? {
           id: jobId,
           type: 'gateway',
-          status: 'accepted'
+          status: 'accepted',
+          input: jobDetails.input || { uri: 'unknown', size: 0 },
+          metadata: jobDetails.metadata || {},
+          profiles: jobDetails.profiles || ['1080p', '720p', '480p']
+        } : {
+          id: jobId,
+          type: 'gateway', 
+          status: 'accepted',
+          input: { uri: 'unknown', size: 0 },
+          metadata: { video_permlink: jobId },
+          profiles: ['1080p', '720p', '480p']
         };
         
         logger.info(`🚀 Starting manual processing for job: ${jobId}`);

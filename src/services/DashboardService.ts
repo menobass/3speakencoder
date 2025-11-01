@@ -288,6 +288,28 @@ export class DashboardService {
       }
     });
 
+    // Available gateway jobs endpoint - shows unassigned and running jobs
+    this.app.get('/api/available-gateway-jobs', async (req, res) => {
+      try {
+        if (this.encoder) {
+          const mongoVerifier = (this.encoder as any).mongoVerifier;
+          if (!mongoVerifier || !mongoVerifier.isEnabled()) {
+            return res.status(403).json({ 
+              error: 'Available gateway jobs require MongoDB access - only available for 3Speak infrastructure nodes' 
+            });
+          }
+          
+          const availableJobs = await mongoVerifier.getAvailableGatewayJobs();
+          return res.json({ jobs: availableJobs, count: availableJobs.length });
+        } else {
+          return res.status(503).json({ error: 'Encoder not available' });
+        }
+      } catch (error) {
+        logger.error('Failed to fetch available gateway jobs:', error);
+        return res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+    });
+
     // Dashboard route
     this.app.get('/', (req, res) => {
       res.sendFile(path.join(__dirname, '../dashboard/index.html'));

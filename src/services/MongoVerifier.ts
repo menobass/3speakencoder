@@ -44,6 +44,7 @@ export interface JobDocument {
   result?: any | null;
   last_pinged_diff?: Date | null;
   attempt_count?: number;
+  progress?: any;
 }
 
 /**
@@ -520,10 +521,10 @@ export class MongoVerifier {
   }
 
   /**
-   * Health check for MongoDB connection
+   * Quick health check for MongoDB connection
    */
   async healthCheck(): Promise<boolean> {
-    if (!this.isEnabled()) {
+    if (!this.isEnabled() || !this.db) {
       return false;
     }
 
@@ -536,5 +537,79 @@ export class MongoVerifier {
       this.isConnected = false;
       return false;
     }
+  }
+
+  /**
+   * Get available gateway jobs for dashboard display
+   * Shows only unassigned ("queued") and running jobs from the last 48 hours
+   */
+  async getAvailableGatewayJobs(): Promise<any[]> {
+    if (!this.isEnabled() || !this.jobs) {
+      return [];
+    }
+
+    try {
+      // Only show jobs from last 48 hours to avoid ancient "running" jobs
+      const cutoffDate = new Date();
+      cutoffDate.setHours(cutoffDate.getHours() - 48);
+
+      const jobs = await this.jobs.find({
+        status: { $in: ['queued', 'running'] }, // Only unassigned and running jobs
+        created_at: { $gte: cutoffDate }        // Only recent jobs
+      })
+      .sort({ created_at: -1 })               // Newest first
+      .limit(50)                              // Reasonable limit
+      .toArray();
+
+      // Transform to dashboard-friendly format
+      return jobs.map(job => ({
+        id: job.id,
+        shortId: job.id.split('-')[0],        // First part of UUID for display
+        owner: job.metadata?.video_owner || 'unknown',
+        permlink: job.metadata?.video_permlink || 'unknown',
+        size: job.input?.size || 0,
+        sizeFormatted: this.formatFileSize(job.input?.size || 0),
+        status: job.status,
+        attemptCount: job.attempt_count || 0,
+        assignedTo: job.assigned_to || null,
+        createdAt: job.created_at,
+        ageFormatted: this.formatTimeAgo(job.created_at),
+        lastPinged: job.last_pinged,
+        progress: job.progress || {}
+      }));
+
+    } catch (error) {
+      logger.error('❌ Failed to fetch available gateway jobs:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Format file size in human-readable format
+   */
+  private formatFileSize(bytes: number): string {
+    if (bytes === 0) return '0 B';
+    
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
+  /**
+   * Format time ago in human-readable format
+   */
+  private formatTimeAgo(date: Date): string {
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMinutes = Math.floor(diffMs / (1000 * 60));
+    const diffHours = Math.floor(diffMinutes / 60);
+    const diffDays = Math.floor(diffHours / 24);
+
+    if (diffMinutes < 1) return 'just now';
+    if (diffMinutes < 60) return `${diffMinutes}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    return `${diffDays}d ago`;
   }
 }

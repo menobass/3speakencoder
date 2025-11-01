@@ -134,6 +134,11 @@
             color: #92400e;
         }
 
+        .status-running {
+            background: #10b981;
+            color: #065f46;
+        }
+
         .status-processing {
             background: #3b82f6;
             color: #1e40af;
@@ -508,14 +513,21 @@
 
             async loadInitialStatus() {
                 try {
-                    // Fetch both status and jobs data
-                    const [statusResponse, jobsResponse] = await Promise.all([
+                    // Fetch status, jobs, and available gateway jobs data
+                    const [statusResponse, jobsResponse, gatewayJobsResponse] = await Promise.all([
                         fetch('/api/status'),
-                        fetch('/api/jobs')
+                        fetch('/api/jobs'),
+                        fetch('/api/available-gateway-jobs')
                     ]);
                     
                     const statusData = await statusResponse.json();
                     const jobsData = await jobsResponse.json();
+                    
+                    // Handle gateway jobs response (may fail if MongoDB not available)
+                    let gatewayJobsData = null;
+                    if (gatewayJobsResponse.ok) {
+                        gatewayJobsData = await gatewayJobsResponse.json();
+                    }
                     
                     // Update node status
                     this.updateNodeStatus(statusData);
@@ -528,9 +540,14 @@
                         });
                     }
                     
-                    // Load available jobs if present
-                    if (jobsData.available && jobsData.available.length > 0) {
-                        this.updateAvailableJobs(jobsData.available);
+                    // Load available gateway jobs from MongoDB if available
+                    if (gatewayJobsData && gatewayJobsData.jobs) {
+                        this.updateAvailableJobs(gatewayJobsData.jobs);
+                    } else {
+                        // Fallback to old method if MongoDB not available
+                        if (jobsData.available && jobsData.available.length > 0) {
+                            this.updateAvailableJobs(jobsData.available);
+                        }
                     }
                 } catch (error) {
                     console.error('Failed to load initial status:', error);
@@ -717,17 +734,17 @@
                 }
 
                 const jobsHtml = this.availableJobs.map(job => `
-                    <div class="job-item" style="border-left-color: #fbbf24;">
+                    <div class="job-item" style="border-left-color: ${job.status === 'running' ? '#10b981' : '#fbbf24'};">
                         <div class="job-header">
-                            <span class="job-id">${job.id}</span>
-                            <span class="job-status status-pending">${job.status}</span>
+                            <span class="job-id" title="${job.id}">${job.shortId}</span>
+                            <span class="job-status ${job.status === 'running' ? 'status-running' : 'status-pending'}">${job.status}</span>
                         </div>
                         <div style="font-size: 14px; color: #a0a0a0;">
-                            Video: ${job.video_id} | Profiles: ${job.profiles.join(', ')}
+                            Owner: ${job.owner}/${job.permlink} | Size: ${job.sizeFormatted}
                         </div>
                         <div style="font-size: 12px; color: #6b7280; margin-top: 5px;">
-                            Created: ${new Date(job.created_at).toLocaleString()}
-                            ${job.size ? ` | Size: ${(job.size / 1024 / 1024).toFixed(1)}MB` : ''}
+                            Created: ${job.ageFormatted} | Attempts: ${job.attemptCount}
+                            ${job.assignedTo ? ` | Assigned to: ${job.assignedTo.substring(0, 20)}...` : ''}
                         </div>
                     </div>
                 `).join('');
@@ -1062,6 +1079,19 @@
         // Initialize dashboard when page loads
         document.addEventListener('DOMContentLoaded', () => {
             dashboard = new EncoderDashboard();
+            
+            // Poll available gateway jobs every 30 seconds
+            setInterval(async () => {
+                try {
+                    const response = await fetch('/api/available-gateway-jobs');
+                    if (response.ok) {
+                        const data = await response.json();
+                        dashboard.updateAvailableJobs(data.jobs || []);
+                    }
+                } catch (error) {
+                    console.log('Gateway jobs polling failed (MongoDB may not be available):', error);
+                }
+            }, 30000); // 30 seconds
             
             // Add Enter key support for manual job input
             document.getElementById('manualJobId').addEventListener('keypress', (e) => {
