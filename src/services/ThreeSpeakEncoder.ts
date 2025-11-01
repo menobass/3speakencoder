@@ -1013,8 +1013,20 @@ export class ThreeSpeakEncoder {
         logger.info(`🎯 SKIP_GATEWAY_FINISH: Skipping gateway.finishJob - ${reason}`);
         
         // 🏴‍☠️ COMPLETE TAKEOVER: Update MongoDB directly when gateway is unreliable
-        if ((usedMongoDBFallback || this.defensiveTakeoverJobs.has(jobId)) && this.mongoVerifier.isEnabled()) {
-          logger.info(`🏴‍☠️ COMPLETE_TAKEOVER: Updating job completion directly in MongoDB`);
+        // 🏴‍☠️ AGGRESSIVE TAKEOVER: Use MongoDB for completion in these cases:
+        // 1. Used MongoDB fallback during processing (usedMongoDBFallback)
+        // 2. Job was defensively taken over (this.defensiveTakeoverJobs.has)
+        // 3. Manual job processing (ownershipAlreadyConfirmed) - prefer MongoDB over unreliable gateway
+        const shouldUseMongoTakeover = (usedMongoDBFallback || 
+                                       this.defensiveTakeoverJobs.has(jobId) || 
+                                       ownershipAlreadyConfirmed) && 
+                                       this.mongoVerifier.isEnabled();
+        
+        if (shouldUseMongoTakeover) {
+          const reason = usedMongoDBFallback ? "MongoDB fallback used" : 
+                        this.defensiveTakeoverJobs.has(jobId) ? "defensive takeover active" : 
+                        "manual job processing";
+          logger.info(`🏴‍☠️ COMPLETE_TAKEOVER: Updating job completion directly in MongoDB (${reason})`);
           logger.info(`📊 MONGO_UPDATE: Setting job ${jobId} as complete with CID: ${gatewayResult.ipfs_hash}`);
           
           try {
@@ -1640,6 +1652,10 @@ export class ThreeSpeakEncoder {
               logger.info(`✅ MONGODB_CONFIRMED: Job ${jobId} is assigned to us in database`);
               logger.info(`🎯 SKIP_GATEWAY: No need to call acceptJob() - we already own this job`);
               jobOwnershipConfirmed = true;
+              
+              // 🏴‍☠️ MARK FOR COMPLETE TAKEOVER: Since we're using MongoDB as source of truth, mark for complete takeover
+              this.defensiveTakeoverJobs.add(jobId);
+              logger.info(`🔒 DEFENSIVE_MARK: Job ${jobId} marked for complete MongoDB control (manual processing)`)
             } else {
               logger.warn(`⚠️ MONGODB_CONFLICT: Job ${jobId} is assigned to another encoder: ${mongoResult.actualOwner}`);
               throw new Error(`Job ${jobId} is already assigned to another encoder: ${mongoResult.actualOwner}`);
