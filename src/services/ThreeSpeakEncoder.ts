@@ -565,6 +565,7 @@ export class ThreeSpeakEncoder {
     // 🛡️ Variables for MongoDB fallback (scope accessible from catch blocks)
     let completedResult: any = null;
     let masterCID: string | null = null;
+    let usedMongoDBFallback: boolean = false; // Track if we used MongoDB to confirm ownership
     
     this.activeJobs.set(jobId, job);
     
@@ -768,6 +769,7 @@ export class ThreeSpeakEncoder {
                 logger.info(`✅ MONGODB_CONFIRMED: Job ${jobId} ownership verified via MongoDB - gateway was wrong!`);
                 logger.info(`📊 EVIDENCE: MongoDB shows assigned_to=${mongoResult.actualOwner}, status=${mongoResult.status}`);
                 logger.info(`🎯 CONCLUSION: Proceeding with job processing - MongoDB is ground truth`);
+                usedMongoDBFallback = true; // Mark that we used MongoDB fallback
               } else {
                 logger.error(`🚨 MONGODB_CONFLICT: Job ${jobId} assigned to different encoder in MongoDB: ${mongoResult.actualOwner}`);
                 logger.error(`🛑 ABORTING: MongoDB confirms job belongs to another encoder`);
@@ -795,11 +797,12 @@ export class ThreeSpeakEncoder {
       logger.info(`🔒 SAFETY_CHECK: Job ${jobId} processing started by encoder ${ourDID}`);
       logger.info(`⏱️ TIMESTAMP: ${new Date().toISOString()} - Starting processing phase`);
       
-      // 🛡️ DEFENSIVE: Set up periodic ownership verification during processing (skip in manual mode)
+      // 🛡️ DEFENSIVE: Set up periodic ownership verification during processing (skip when offline)
       const startOwnershipMonitoring = () => {
-        if (ownershipAlreadyConfirmed) {
-          logger.info(`🎯 MANUAL_MODE: Skipping periodic ownership checks - ownership pre-confirmed`);
-          return; // Skip monitoring in manual mode
+        if (ownershipAlreadyConfirmed || usedMongoDBFallback) {
+          const reason = ownershipAlreadyConfirmed ? "ownership pre-confirmed (manual)" : "MongoDB fallback used";
+          logger.info(`🎯 SKIP_MONITORING: Skipping periodic ownership checks - ${reason}`);
+          return; // Skip monitoring when gateway is unreliable
         }
         
         ownershipCheckInterval = setInterval(async () => {
@@ -847,14 +850,15 @@ export class ThreeSpeakEncoder {
       // Update status to running using legacy-compatible format
       job.status = JobStatus.RUNNING;
       
-      // 🎯 MANUAL_MODE: Skip gateway pings when ownership is pre-confirmed (manual processing)
-      if (!ownershipAlreadyConfirmed) {
+      // 🎯 SKIP_GATEWAY_PINGS: Skip when in manual mode OR when using MongoDB fallback
+      if (!ownershipAlreadyConfirmed && !usedMongoDBFallback) {
         await this.gateway.pingJob(jobId, { 
           progressPct: 1.0,    // ⚠️ CRITICAL: Must be > 1 to trigger gateway status change
           download_pct: 100    // Download complete at this point
         });
       } else {
-        logger.info(`🎯 MANUAL_MODE: Skipping gateway ping - ownership pre-confirmed, processing without gateway notifications`);
+        const reason = ownershipAlreadyConfirmed ? "ownership pre-confirmed (manual)" : "MongoDB fallback used";
+        logger.info(`🎯 SKIP_GATEWAY_PING: Skipping gateway ping - ${reason}, processing without gateway notifications`);
       }
 
       let result: any;
@@ -879,8 +883,8 @@ export class ThreeSpeakEncoder {
             this.dashboard.updateJobProgress(job.id, progress.percent);
           }
           
-          // 🎯 MANUAL_MODE: Skip gateway progress pings when ownership is pre-confirmed
-          if (!ownershipAlreadyConfirmed) {
+          // 🎯 SKIP_GATEWAY_PINGS: Skip progress pings when offline or in manual mode
+          if (!ownershipAlreadyConfirmed && !usedMongoDBFallback) {
             // Update progress with gateway (fire-and-forget to prevent memory leaks) - LEGACY FORMAT
             this.safePingJob(jobId, { 
               progress: progress.percent,        // Our internal format
@@ -901,7 +905,26 @@ export class ThreeSpeakEncoder {
         throw new Error('No master playlist output received from video processor');
       }
       
-      // 🛡️ Capture values for MongoDB fallback in outer scope
+      // � DEBUG: Log the actual result structure to help diagnose format issues
+      logger.info(`🔍 DEBUG: Video processing result structure:`);
+      logger.info(`🔍 DEBUG: result.length = ${result.length}`);
+      logger.info(`🔍 DEBUG: masterOutput keys = ${Object.keys(masterOutput || {}).join(', ')}`);
+      logger.info(`🔍 DEBUG: masterOutput = ${JSON.stringify(masterOutput, null, 2)}`);
+      
+      // 🛡️ DEFENSIVE: Handle missing properties gracefully
+      if (!masterOutput.ipfsHash) {
+        throw new Error('Video processing result missing required ipfsHash property');
+      }
+      
+      if (!masterOutput.uri) {
+        logger.warn(`⚠️ Video processing result missing 'uri' property - using fallback`);
+        // Try common alternative property names
+        const fallbackOutput = masterOutput as any;
+        masterOutput.uri = fallbackOutput.playlist || fallbackOutput.m3u8 || fallbackOutput.path || `${masterOutput.ipfsHash}/master.m3u8`;
+        logger.info(`🔧 Using fallback URI: ${masterOutput.uri}`);
+      }
+      
+      // �🛡️ Capture values for MongoDB fallback in outer scope
       completedResult = result;
       masterCID = masterOutput.ipfsHash;
       
@@ -955,15 +978,16 @@ export class ThreeSpeakEncoder {
       logger.info(`🔍 DEBUG: Verification phase complete, proceeding to gateway notification...`);
       logger.info(`📋 Sending result to gateway: ${JSON.stringify(gatewayResult)}`);
       
-      // Complete the job with gateway (skip if in manual mode)
+      // Complete the job with gateway (skip if offline or in manual mode)
       let finishResponse: any = {};
       
-      if (!ownershipAlreadyConfirmed) {
+      if (!ownershipAlreadyConfirmed && !usedMongoDBFallback) {
         logger.info(`🔍 DEBUG: About to call gateway.finishJob for ${jobId}...`);
         finishResponse = await this.gateway.finishJob(jobId, gatewayResult);
         logger.info(`🔍 DEBUG: Gateway finishJob response received:`, finishResponse);
       } else {
-        logger.info(`🎯 MANUAL_MODE: Skipping gateway.finishJob - job processed in manual mode`);
+        const reason = ownershipAlreadyConfirmed ? "manual mode" : "MongoDB fallback (gateway unreliable)";
+        logger.info(`🎯 SKIP_GATEWAY_FINISH: Skipping gateway.finishJob - ${reason}`);
         logger.info(`📋 Job ${jobId} completed successfully with result: ${JSON.stringify(gatewayResult)}`);
         finishResponse = { success: true, duplicate: false }; // Simulate successful response
       }
@@ -1166,8 +1190,8 @@ export class ThreeSpeakEncoder {
         skipJobSilently = true;
       }
       
-      // Only report failure if we confirmed we owned the job (and not in manual mode)
-      if (shouldReportFailure && !ownershipAlreadyConfirmed) {
+      // Only report failure if we confirmed we owned the job (and not offline/manual mode)
+      if (shouldReportFailure && !ownershipAlreadyConfirmed && !usedMongoDBFallback) {
         try {
           await this.gateway.failJob(jobId, {
             error: errorMessage,
@@ -1184,9 +1208,10 @@ export class ThreeSpeakEncoder {
             logger.warn(`⚠️ Failed to report job failure to gateway for ${jobId}:`, reportError.message);
           }
         }
-      } else if (shouldReportFailure && ownershipAlreadyConfirmed) {
-        logger.info(`🎯 MANUAL_MODE: Job ${jobId} failed in manual processing - not reporting to gateway`);
-        logger.error(`❌ MANUAL_PROCESSING_FAILED: ${errorMessage}`);
+      } else if (shouldReportFailure && (ownershipAlreadyConfirmed || usedMongoDBFallback)) {
+        const reason = ownershipAlreadyConfirmed ? "manual processing" : "MongoDB fallback mode";
+        logger.info(`🎯 OFFLINE_MODE: Job ${jobId} failed in ${reason} - not reporting to gateway`);
+        logger.error(`❌ OFFLINE_PROCESSING_FAILED: ${errorMessage}`);
         // Don't throw here - we still want to handle the original job failure with retry logic
       } else {
         logger.info(`✅ JOB_SKIP: Not reporting failure for ${jobId} - job assignment was uncertain`);
@@ -1401,6 +1426,18 @@ export class ThreeSpeakEncoder {
       const masterOutput = result[0];
       if (!masterOutput) {
         throw new Error('No master playlist output received from video processor');
+      }
+      
+      // 🛡️ DEFENSIVE: Handle missing properties gracefully (legacy processJob method)
+      if (!masterOutput.ipfsHash) {
+        throw new Error('Video processing result missing required ipfsHash property');
+      }
+      
+      if (!masterOutput.uri) {
+        logger.warn(`⚠️ Video processing result missing 'uri' property - using fallback (legacy method)`);
+        const fallbackOutput = masterOutput as any;
+        masterOutput.uri = fallbackOutput.playlist || fallbackOutput.m3u8 || fallbackOutput.path || `${masterOutput.ipfsHash}/master.m3u8`;
+        logger.info(`🔧 Using fallback URI: ${masterOutput.uri}`);
       }
       
       // 🛡️ Capture values for MongoDB fallback in outer scope
