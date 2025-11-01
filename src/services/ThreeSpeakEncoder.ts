@@ -646,6 +646,7 @@ export class ThreeSpeakEncoder {
                     // Job was actually assigned to us somehow
                     logger.info(`✅ MONGODB_SURPRISE: Job ${jobId} was assigned to us despite gateway failure!`);
                     logger.info(`🎯 PROCEEDING: Gateway lied, but MongoDB shows we own the job`);
+                    usedMongoDBFallback = true; // 🎯 CRITICAL: Mark that we used MongoDB fallback
                   } else if (!mongoResult.actualOwner) {
                     // Job is still unassigned - TAKE CONTROL
                     logger.warn(`🚨 GATEWAY_BROKEN: Job ${jobId} still unassigned after gateway failure`);
@@ -657,6 +658,7 @@ export class ThreeSpeakEncoder {
                       logger.info(`✅ FORCE_ASSIGNED: Job ${jobId} forcibly assigned to us in MongoDB`);
                       logger.info(`🎯 DEFENSIVE_SUCCESS: Proceeding with processing despite gateway failure`);
                       logger.info(`📊 TELEMETRY: Gateway broken, but MongoDB takeover successful`);
+                      usedMongoDBFallback = true; // 🎯 CRITICAL: Mark that we used MongoDB fallback
                       
                     } catch (forceAssignError) {
                       logger.error(`❌ FORCE_ASSIGN_FAILED: Could not force-assign job ${jobId}:`, forceAssignError);
