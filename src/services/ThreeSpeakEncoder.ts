@@ -1138,6 +1138,12 @@ export class ThreeSpeakEncoder {
 
       const job = await this.gateway.getJob();
       if (job) {
+        // 🚨 DUPLICATE PREVENTION: Check if we're already processing this job
+        if (this.activeJobs.has(job.id) || this.jobQueue.hasJob(job.id)) {
+          logger.debug(`🔄 Job ${job.id} already in queue or active - skipping duplicate from gateway`);
+          return;
+        }
+        
         logger.info(`📥 Received new gateway job: ${job.id}`);
         
         // 🔒 OWNERSHIP VALIDATION: Check if job is already assigned to someone else
@@ -1384,22 +1390,68 @@ export class ThreeSpeakEncoder {
     logger.info(`🎯 Attempting to manually process job: ${jobId}`);
     
     try {
-      // First check if job exists and get its status
-      const jobStatus = await this.gateway.getJobStatus(jobId);
+      // 🛡️ ENHANCED: Check MongoDB first if available (more reliable than gateway)
+      let jobOwnershipConfirmed = false;
+      const ourDID = this.identity.getDIDKey();
       
-      if (!jobStatus) {
-        throw new Error(`Job ${jobId} not found in gateway`);
+      if (this.mongoVerifier.isEnabled()) {
+        try {
+          logger.info(`🔍 Checking MongoDB for job ${jobId} ownership...`);
+          const mongoResult = await this.mongoVerifier.verifyJobOwnership(jobId, ourDID);
+          
+          if (mongoResult.jobExists) {
+            if (mongoResult.isOwned) {
+              logger.info(`✅ MONGODB_CONFIRMED: Job ${jobId} is assigned to us in database`);
+              jobOwnershipConfirmed = true;
+            } else {
+              logger.warn(`⚠️ MONGODB_CONFLICT: Job ${jobId} is assigned to another encoder: ${mongoResult.actualOwner}`);
+              throw new Error(`Job ${jobId} is already assigned to another encoder: ${mongoResult.actualOwner}`);
+            }
+          } else {
+            logger.warn(`⚠️ Job ${jobId} not found in MongoDB - may be completed or cancelled`);
+          }
+        } catch (mongoError) {
+          logger.warn(`⚠️ MongoDB verification failed, falling back to gateway check:`, mongoError);
+        }
       }
       
-      logger.info(`📋 Job ${jobId} status: ${jobStatus.status || 'unknown'}`);
+      // If MongoDB didn't confirm ownership, try gateway
+      if (!jobOwnershipConfirmed) {
+        logger.info(`🔍 Checking gateway for job ${jobId} status...`);
+        const jobStatus = await this.gateway.getJobStatus(jobId);
+        
+        if (!jobStatus) {
+          throw new Error(`Job ${jobId} not found in gateway`);
+        }
+        
+        logger.info(`📋 Job ${jobId} gateway status: ${jobStatus.status || 'unknown'}`);
+        
+        // Try to accept the job (this will work if job is available/unassigned)
+        await this.gateway.acceptJob(jobId);
+        logger.info(`✅ Manually accepted job via gateway: ${jobId}`);
+        jobOwnershipConfirmed = true;
+      }
       
-      // Try to accept the job (this will work if job is available/unassigned)
-      await this.gateway.acceptJob(jobId);
-      logger.info(`✅ Manually accepted job: ${jobId}`);
-      
-      // The job will be picked up by our regular polling mechanism
-      // since it's now assigned to our node
-      logger.info(`🎬 Job ${jobId} should be picked up by next polling cycle`);
+      if (jobOwnershipConfirmed) {
+        // Check if job is already in our active jobs to prevent duplicates
+        if (this.activeJobs.has(jobId)) {
+          logger.warn(`⚠️ Job ${jobId} is already being processed - skipping duplicate`);
+          return;
+        }
+        
+        // Create a job object and process it directly
+        const job = {
+          id: jobId,
+          type: 'gateway',
+          status: 'accepted'
+        };
+        
+        logger.info(`🚀 Starting manual processing for job: ${jobId}`);
+        this.activeJobs.set(jobId, job);
+        
+        // Process the job directly instead of waiting for polling
+        await this.processGatewayJob(job);
+      }
       
     } catch (error) {
       logger.error(`❌ Failed to manually process job ${jobId}:`, error);

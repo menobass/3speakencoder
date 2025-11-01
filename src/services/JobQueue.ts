@@ -31,6 +31,22 @@ export class JobQueue {
 
   // Add 3Speak gateway job
   addGatewayJob(job: VideoJob): void {
+    // 🚨 DUPLICATE PREVENTION: Don't add job if it's already in queue or active
+    if (this.jobs.has(job.id)) {
+      logger.warn(`⚠️ Job ${job.id} already exists in queue - skipping duplicate`);
+      return;
+    }
+    
+    if (this.pendingQueue.includes(job.id)) {
+      logger.warn(`⚠️ Job ${job.id} already in pending queue - skipping duplicate`);
+      return;
+    }
+    
+    if (this.activeJobs.has(job.id)) {
+      logger.warn(`⚠️ Job ${job.id} is currently active - skipping duplicate`);
+      return;
+    }
+    
     this.jobs.set(job.id, job);
     this.pendingQueue.push(job.id);
     logger.info(`📥 Gateway job queued: ${job.id} (position: ${this.pendingQueue.length})`);
@@ -168,6 +184,11 @@ export class JobQueue {
   // Get job by ID
   getJob(jobId: string): QueuedJob | null {
     return this.jobs.get(jobId) || null;
+  }
+
+  // Check if job exists in queue or is active
+  hasJob(jobId: string): boolean {
+    return this.jobs.has(jobId) || this.activeJobs.has(jobId) || this.pendingQueue.includes(jobId);
   }
 
   // Get queue stats
