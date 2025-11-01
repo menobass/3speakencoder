@@ -584,13 +584,41 @@ export class ThreeSpeakEncoder {
     await this.updateDashboard();
     
     try {
-      // Accept the job with gateway (atomic claim operation)
-      await this.gateway.acceptJob(jobId);
-      logger.info(`✅ Accepted gateway job: ${jobId}`);
-
-      // 🔒 CRITICAL OWNERSHIP VALIDATION: Verify we successfully claimed the job
+      // 🔍 SMART CLAIMING: Check if we need to claim the job first
+      let needsToClaim = true;
       let jobStatus: any;
       
+      try {
+        // Check current job status to see if we already own it
+        jobStatus = await this.gateway.getJobStatus(jobId);
+        if (jobStatus?.assigned_to === ourDID) {
+          logger.info(`✅ ALREADY_OWNED: Job ${jobId} is already assigned to us - no need to claim`);
+          needsToClaim = false;
+        } else if (!jobStatus?.assigned_to) {
+          logger.info(`🎯 NEEDS_CLAIMING: Job ${jobId} is unassigned - will claim it`);
+          needsToClaim = true;
+        } else {
+          logger.warn(`⚠️ OWNERSHIP_CONFLICT: Job ${jobId} is assigned to ${jobStatus.assigned_to}, not us`);
+          throw new Error(`Job ${jobId} is assigned to another encoder: ${jobStatus.assigned_to}`);
+        }
+      } catch (statusError) {
+        logger.warn(`⚠️ Could not check job status, will attempt to claim anyway:`, statusError);
+        needsToClaim = true; // Default to claiming if we can't check status
+      }
+      
+      // Only call acceptJob if we need to claim the job
+      if (needsToClaim) {
+        logger.info(`📞 CLAIMING: Calling acceptJob() for ${jobId}`);
+        await this.gateway.acceptJob(jobId);
+        logger.info(`✅ Successfully claimed gateway job: ${jobId}`);
+        
+        // Re-check status after claiming
+        jobStatus = await this.gateway.getJobStatus(jobId);
+      } else {
+        logger.info(`⏩ SKIP_CLAIMING: Job ${jobId} already owned, proceeding directly to processing`);
+      }
+
+      // 🔒 CRITICAL OWNERSHIP VALIDATION: Verify we own the job
       try {
         jobStatus = await this.gateway.getJobStatus(jobId);
         logger.info(`🔍 Job ${jobId} status after accept: assigned_to=${jobStatus.assigned_to || 'null'}, status=${jobStatus.status || 'unknown'}`);
@@ -1402,6 +1430,7 @@ export class ThreeSpeakEncoder {
           if (mongoResult.jobExists) {
             if (mongoResult.isOwned) {
               logger.info(`✅ MONGODB_CONFIRMED: Job ${jobId} is assigned to us in database`);
+              logger.info(`🎯 SKIP_GATEWAY: No need to call acceptJob() - we already own this job`);
               jobOwnershipConfirmed = true;
             } else {
               logger.warn(`⚠️ MONGODB_CONFLICT: Job ${jobId} is assigned to another encoder: ${mongoResult.actualOwner}`);
@@ -1415,7 +1444,7 @@ export class ThreeSpeakEncoder {
         }
       }
       
-      // If MongoDB didn't confirm ownership, try gateway
+      // Only try gateway if MongoDB didn't confirm ownership
       if (!jobOwnershipConfirmed) {
         logger.info(`🔍 Checking gateway for job ${jobId} status...`);
         const jobStatus = await this.gateway.getJobStatus(jobId);
@@ -1426,10 +1455,21 @@ export class ThreeSpeakEncoder {
         
         logger.info(`📋 Job ${jobId} gateway status: ${jobStatus.status || 'unknown'}`);
         
-        // Try to accept the job (this will work if job is available/unassigned)
-        await this.gateway.acceptJob(jobId);
-        logger.info(`✅ Manually accepted job via gateway: ${jobId}`);
-        jobOwnershipConfirmed = true;
+        // Check if job is already assigned to us via gateway
+        if (jobStatus.assigned_to === ourDID) {
+          logger.info(`✅ GATEWAY_CONFIRMED: Job ${jobId} is already assigned to us`);
+          logger.info(`🎯 SKIP_ACCEPT: No need to call acceptJob() - we already own this job`);
+          jobOwnershipConfirmed = true;
+        } else if (!jobStatus.assigned_to) {
+          // Job is unassigned - need to claim it
+          logger.info(`🎯 CLAIMING: Job ${jobId} is unassigned, attempting to claim via acceptJob()`);
+          await this.gateway.acceptJob(jobId);
+          logger.info(`✅ Successfully claimed job via gateway: ${jobId}`);
+          jobOwnershipConfirmed = true;
+        } else {
+          // Job is assigned to someone else
+          throw new Error(`Job ${jobId} is assigned to another encoder: ${jobStatus.assigned_to}`);
+        }
       }
       
       if (jobOwnershipConfirmed) {
