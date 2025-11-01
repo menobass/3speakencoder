@@ -795,8 +795,13 @@ export class ThreeSpeakEncoder {
       logger.info(`🔒 SAFETY_CHECK: Job ${jobId} processing started by encoder ${ourDID}`);
       logger.info(`⏱️ TIMESTAMP: ${new Date().toISOString()} - Starting processing phase`);
       
-      // 🛡️ DEFENSIVE: Set up periodic ownership verification during processing
+      // 🛡️ DEFENSIVE: Set up periodic ownership verification during processing (skip in manual mode)
       const startOwnershipMonitoring = () => {
+        if (ownershipAlreadyConfirmed) {
+          logger.info(`🎯 MANUAL_MODE: Skipping periodic ownership checks - ownership pre-confirmed`);
+          return; // Skip monitoring in manual mode
+        }
+        
         ownershipCheckInterval = setInterval(async () => {
           try {
             const currentStatus = await this.gateway.getJobStatus(jobId);
@@ -841,10 +846,16 @@ export class ThreeSpeakEncoder {
 
       // Update status to running using legacy-compatible format
       job.status = JobStatus.RUNNING;
-      await this.gateway.pingJob(jobId, { 
-        progressPct: 1.0,    // ⚠️ CRITICAL: Must be > 1 to trigger gateway status change
-        download_pct: 100    // Download complete at this point
-      });
+      
+      // 🎯 MANUAL_MODE: Skip gateway pings when ownership is pre-confirmed (manual processing)
+      if (!ownershipAlreadyConfirmed) {
+        await this.gateway.pingJob(jobId, { 
+          progressPct: 1.0,    // ⚠️ CRITICAL: Must be > 1 to trigger gateway status change
+          download_pct: 100    // Download complete at this point
+        });
+      } else {
+        logger.info(`🎯 MANUAL_MODE: Skipping gateway ping - ownership pre-confirmed, processing without gateway notifications`);
+      }
 
       let result: any;
       
@@ -868,12 +879,15 @@ export class ThreeSpeakEncoder {
             this.dashboard.updateJobProgress(job.id, progress.percent);
           }
           
-          // Update progress with gateway (fire-and-forget to prevent memory leaks) - LEGACY FORMAT
-          this.safePingJob(jobId, { 
-            progress: progress.percent,        // Our internal format
-            progressPct: progress.percent,     // Legacy gateway format
-            download_pct: 100                  // Download always complete during encoding
-          });
+          // 🎯 MANUAL_MODE: Skip gateway progress pings when ownership is pre-confirmed
+          if (!ownershipAlreadyConfirmed) {
+            // Update progress with gateway (fire-and-forget to prevent memory leaks) - LEGACY FORMAT
+            this.safePingJob(jobId, { 
+              progress: progress.percent,        // Our internal format
+              progressPct: progress.percent,     // Legacy gateway format
+              download_pct: 100                  // Download always complete during encoding
+            });
+          }
         });
         
         // Cache the result before attempting gateway notification
@@ -941,10 +955,18 @@ export class ThreeSpeakEncoder {
       logger.info(`🔍 DEBUG: Verification phase complete, proceeding to gateway notification...`);
       logger.info(`📋 Sending result to gateway: ${JSON.stringify(gatewayResult)}`);
       
-      // Complete the job with gateway
-      logger.info(`🔍 DEBUG: About to call gateway.finishJob for ${jobId}...`);
-      const finishResponse = await this.gateway.finishJob(jobId, gatewayResult);
-      logger.info(`🔍 DEBUG: Gateway finishJob response received:`, finishResponse);
+      // Complete the job with gateway (skip if in manual mode)
+      let finishResponse: any = {};
+      
+      if (!ownershipAlreadyConfirmed) {
+        logger.info(`🔍 DEBUG: About to call gateway.finishJob for ${jobId}...`);
+        finishResponse = await this.gateway.finishJob(jobId, gatewayResult);
+        logger.info(`🔍 DEBUG: Gateway finishJob response received:`, finishResponse);
+      } else {
+        logger.info(`🎯 MANUAL_MODE: Skipping gateway.finishJob - job processed in manual mode`);
+        logger.info(`📋 Job ${jobId} completed successfully with result: ${JSON.stringify(gatewayResult)}`);
+        finishResponse = { success: true, duplicate: false }; // Simulate successful response
+      }
       
       // 🚨 FIX: Always clear cached result to prevent memory leak
       this.jobQueue.clearCachedResult(jobId);
@@ -1144,8 +1166,8 @@ export class ThreeSpeakEncoder {
         skipJobSilently = true;
       }
       
-      // Only report failure if we confirmed we owned the job
-      if (shouldReportFailure) {
+      // Only report failure if we confirmed we owned the job (and not in manual mode)
+      if (shouldReportFailure && !ownershipAlreadyConfirmed) {
         try {
           await this.gateway.failJob(jobId, {
             error: errorMessage,
@@ -1161,8 +1183,11 @@ export class ThreeSpeakEncoder {
           } else {
             logger.warn(`⚠️ Failed to report job failure to gateway for ${jobId}:`, reportError.message);
           }
-          // Don't throw here - we still want to handle the original job failure with retry logic
         }
+      } else if (shouldReportFailure && ownershipAlreadyConfirmed) {
+        logger.info(`🎯 MANUAL_MODE: Job ${jobId} failed in manual processing - not reporting to gateway`);
+        logger.error(`❌ MANUAL_PROCESSING_FAILED: ${errorMessage}`);
+        // Don't throw here - we still want to handle the original job failure with retry logic
       } else {
         logger.info(`✅ JOB_SKIP: Not reporting failure for ${jobId} - job assignment was uncertain`);
       }
