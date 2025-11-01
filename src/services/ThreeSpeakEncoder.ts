@@ -615,11 +615,65 @@ export class ThreeSpeakEncoder {
         // Only call acceptJob if we need to claim the job
         if (needsToClaim) {
           logger.info(`📞 CLAIMING: Calling acceptJob() for ${jobId}`);
-          await this.gateway.acceptJob(jobId);
-          logger.info(`✅ Successfully claimed gateway job: ${jobId}`);
           
-          // Re-check status after claiming
-          jobStatus = await this.gateway.getJobStatus(jobId);
+          try {
+            await this.gateway.acceptJob(jobId);
+            logger.info(`✅ Successfully claimed gateway job: ${jobId}`);
+            
+            // Re-check status after claiming
+            jobStatus = await this.gateway.getJobStatus(jobId);
+            
+          } catch (acceptError: any) {
+            // 🛡️ DEFENSIVE CLAIMING: Gateway failed to assign job - investigate and take control
+            const errorMessage = acceptError instanceof Error ? acceptError.message : String(acceptError);
+            logger.error(`❌ GATEWAY_CLAIM_FAILED: acceptJob() failed for ${jobId}:`, errorMessage);
+            logger.info(`🔍 DEFENSIVE_MODE: Investigating job status via MongoDB before giving up...`);
+            
+            // Check MongoDB to see if the job is still unassigned
+            if (this.mongoVerifier.isEnabled()) {
+              try {
+                const mongoResult = await this.mongoVerifier.verifyJobOwnership(jobId, ourDID);
+                
+                if (mongoResult.jobExists) {
+                  if (mongoResult.isOwned) {
+                    // Job was actually assigned to us somehow
+                    logger.info(`✅ MONGODB_SURPRISE: Job ${jobId} was assigned to us despite gateway failure!`);
+                    logger.info(`🎯 PROCEEDING: Gateway lied, but MongoDB shows we own the job`);
+                  } else if (!mongoResult.actualOwner) {
+                    // Job is still unassigned - TAKE CONTROL
+                    logger.warn(`🚨 GATEWAY_BROKEN: Job ${jobId} still unassigned after gateway failure`);
+                    logger.info(`🛡️ DEFENSIVE_TAKEOVER: Force-assigning job to ourselves to prevent limbo`);
+                    
+                    try {
+                      // Force assign the job to ourselves in MongoDB
+                      await this.mongoVerifier.forceAssignJob(jobId, ourDID);
+                      logger.info(`✅ FORCE_ASSIGNED: Job ${jobId} forcibly assigned to us in MongoDB`);
+                      logger.info(`🎯 DEFENSIVE_SUCCESS: Proceeding with processing despite gateway failure`);
+                      logger.info(`📊 TELEMETRY: Gateway broken, but MongoDB takeover successful`);
+                      
+                    } catch (forceAssignError) {
+                      logger.error(`❌ FORCE_ASSIGN_FAILED: Could not force-assign job ${jobId}:`, forceAssignError);
+                      throw new Error(`Both gateway and MongoDB assignment failed: ${errorMessage}`);
+                    }
+                  } else {
+                    // Job was assigned to someone else
+                    logger.info(`🏃‍♂️ RACE_CONDITION: Job ${jobId} was assigned to ${mongoResult.actualOwner} while we were trying`);
+                    throw new Error(`Job assigned to another encoder: ${mongoResult.actualOwner}`);
+                  }
+                } else {
+                  logger.error(`🤔 JOB_NOT_FOUND: Job ${jobId} doesn't exist in MongoDB`);
+                  throw new Error(`Job not found in database: ${jobId}`);
+                }
+                
+              } catch (mongoError) {
+                logger.error(`❌ MONGODB_VERIFICATION_FAILED: Could not check job status in MongoDB:`, mongoError);
+                throw new Error(`Gateway failed and MongoDB verification failed: ${errorMessage}`);
+              }
+            } else {
+              logger.error(`🔒 MONGODB_DISABLED: Cannot perform defensive takeover - MongoDB access required`);
+              throw acceptError; // Re-throw original error
+            }
+          }
         } else {
           logger.info(`⏩ SKIP_CLAIMING: Job ${jobId} already owned, proceeding directly to processing`);
         }

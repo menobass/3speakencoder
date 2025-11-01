@@ -390,6 +390,64 @@ export class MongoVerifier {
   }
 
   /**
+   * 🛡️ DEFENSIVE MODE: Force-assign job to encoder when gateway fails
+   * Use this when gateway can't assign job but job is unassigned in MongoDB
+   */
+  async forceAssignJob(jobId: string, assignToDID: string): Promise<void> {
+    if (!this.isEnabled()) {
+      throw new Error('MongoDB verification not enabled - cannot force assign job');
+    }
+
+    try {
+      // 🔒 SECURITY CHECK: Verify job exists and is unassigned
+      logger.info(`🔒 SECURITY: Verifying job ${jobId} is unassigned before force assignment...`);
+      const existingJob = await this.jobs!.findOne({ id: jobId });
+      
+      if (!existingJob) {
+        throw new Error(`Job ${jobId} not found in database`);
+      }
+      
+      if (existingJob.assigned_to) {
+        logger.warn(`🚨 SECURITY: Attempted to force assign already assigned job ${jobId}`);
+        logger.info(`📊 Current assignment: ${existingJob.assigned_to}`);
+        logger.info(`🛡️ Blocking force assignment to prevent job theft`);
+        throw new Error(`Job ${jobId} is already assigned to ${existingJob.assigned_to} - cannot steal assigned jobs`);
+      }
+      
+      logger.info(`✅ SECURITY: Job ${jobId} is unassigned - safe to force assign`);
+      logger.info(`🛡️ FORCE_ASSIGN: Assigning job ${jobId} to ${assignToDID} in MongoDB`);
+      logger.info(`📊 Setting assigned_to=${assignToDID}, status='assigned'`);
+      
+      const updateResult = await this.jobs!.updateOne(
+        { id: jobId },
+        {
+          $set: {
+            assigned_to: assignToDID,
+            status: 'assigned',
+            assigned_at: new Date(),
+            last_pinged: new Date()
+          }
+        }
+      );
+
+      if (updateResult.matchedCount === 0) {
+        throw new Error(`Job ${jobId} not found in MongoDB`);
+      }
+
+      if (updateResult.modifiedCount === 0) {
+        logger.warn(`⚠️ Job ${jobId} was found but not modified - may have been assigned concurrently`);
+      } else {
+        logger.info(`✅ FORCE_ASSIGN: Job ${jobId} successfully assigned to ${assignToDID} in MongoDB`);
+        logger.info(`📊 MongoDB operation: matched=${updateResult.matchedCount}, modified=${updateResult.modifiedCount}`);
+      }
+      
+    } catch (error) {
+      logger.error(`❌ Failed to force assign job ${jobId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Get detailed job status from MongoDB for verification
    */
   async getJobStatusUpdate(jobId: string): Promise<{
