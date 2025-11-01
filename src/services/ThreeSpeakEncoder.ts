@@ -28,6 +28,7 @@ export class ThreeSpeakEncoder {
   private mongoVerifier: MongoVerifier;
   private isRunning: boolean = false;
   private activeJobs: Map<string, any> = new Map();
+  private defensiveTakeoverJobs: Set<string> = new Set(); // Track jobs we've taken via MongoDB fallback
   private gatewayFailureCount: number = 0;
   private readonly maxGatewayFailures: number = 3; // Mark offline after 3 consecutive failures
   private lastGatewaySuccess: Date = new Date();
@@ -562,6 +563,12 @@ export class ThreeSpeakEncoder {
     const ourDID = this.identity.getDIDKey();
     let ownershipCheckInterval: NodeJS.Timeout | null = null;
     
+    // 🛡️ DEFENSIVE_CHECK: If this job was previously taken via MongoDB, force offline processing
+    if (this.defensiveTakeoverJobs.has(jobId)) {
+      logger.info(`🔒 DEFENSIVE_OVERRIDE: Job ${jobId} was previously taken via MongoDB - forcing offline mode`);
+      ownershipAlreadyConfirmed = true; // Force skip all gateway interactions
+    }
+    
     // 🛡️ Variables for MongoDB fallback (scope accessible from catch blocks)
     let completedResult: any = null;
     let masterCID: string | null = null;
@@ -647,6 +654,10 @@ export class ThreeSpeakEncoder {
                     logger.info(`✅ MONGODB_SURPRISE: Job ${jobId} was assigned to us despite gateway failure!`);
                     logger.info(`🎯 PROCEEDING: Gateway lied, but MongoDB shows we own the job`);
                     usedMongoDBFallback = true; // 🎯 CRITICAL: Mark that we used MongoDB fallback
+                    
+                    // 🛡️ PERSISTENT_STATE: Mark this job as defensively taken over to prevent future gateway calls
+                    this.defensiveTakeoverJobs.add(jobId);
+                    logger.info(`🔒 DEFENSIVE_LOCK: Job ${jobId} permanently marked as MongoDB-controlled`)
                   } else if (!mongoResult.actualOwner) {
                     // Job is still unassigned - TAKE CONTROL
                     logger.warn(`🚨 GATEWAY_BROKEN: Job ${jobId} still unassigned after gateway failure`);
@@ -659,6 +670,10 @@ export class ThreeSpeakEncoder {
                       logger.info(`🎯 DEFENSIVE_SUCCESS: Proceeding with processing despite gateway failure`);
                       logger.info(`📊 TELEMETRY: Gateway broken, but MongoDB takeover successful`);
                       usedMongoDBFallback = true; // 🎯 CRITICAL: Mark that we used MongoDB fallback
+                      
+                      // 🛡️ PERSISTENT_STATE: Mark this job as defensively taken over to prevent future gateway calls
+                      this.defensiveTakeoverJobs.add(jobId);
+                      logger.info(`🔒 DEFENSIVE_LOCK: Job ${jobId} permanently marked as MongoDB-controlled`)
                       
                     } catch (forceAssignError) {
                       logger.error(`❌ FORCE_ASSIGN_FAILED: Could not force-assign job ${jobId}:`, forceAssignError);
@@ -996,6 +1011,23 @@ export class ThreeSpeakEncoder {
       } else {
         const reason = ownershipAlreadyConfirmed ? "manual mode" : "MongoDB fallback (gateway unreliable)";
         logger.info(`🎯 SKIP_GATEWAY_FINISH: Skipping gateway.finishJob - ${reason}`);
+        
+        // 🏴‍☠️ COMPLETE TAKEOVER: Update MongoDB directly when gateway is unreliable
+        if ((usedMongoDBFallback || this.defensiveTakeoverJobs.has(jobId)) && this.mongoVerifier.isEnabled()) {
+          logger.info(`🏴‍☠️ COMPLETE_TAKEOVER: Updating job completion directly in MongoDB`);
+          logger.info(`📊 MONGO_UPDATE: Setting job ${jobId} as complete with CID: ${gatewayResult.ipfs_hash}`);
+          
+          try {
+            await this.mongoVerifier.forceCompleteJob(jobId, { cid: gatewayResult.ipfs_hash });
+            logger.info(`✅ MONGO_SUCCESS: Job ${jobId} marked as complete in MongoDB`);
+            logger.info(`🎯 TOTAL_INDEPENDENCE: Gateway bypassed completely - job done!`);
+          } catch (mongoError) {
+            logger.error(`❌ MONGO_COMPLETION_FAILED: Could not update MongoDB:`, mongoError);
+            logger.warn(`🆘 Job was processed successfully, but MongoDB update failed`);
+            // Continue anyway - the work is done, just the record update failed
+          }
+        }
+        
         logger.info(`📋 Job ${jobId} completed successfully with result: ${JSON.stringify(gatewayResult)}`);
         finishResponse = { success: true, duplicate: false }; // Simulate successful response
       }
@@ -1231,6 +1263,7 @@ export class ThreeSpeakEncoder {
         
         // Clean up from active jobs since we're skipping
         this.activeJobs.delete(jobId);
+        this.defensiveTakeoverJobs.delete(jobId); // Clean up defensive takeover tracking
         
         // Log as completed (skipped) for tracking purposes
         logger.info(`🏁 JOB_SKIPPED: Encoder ${ourDID} gracefully skipped job ${jobId} at ${new Date().toISOString()}`);
@@ -1247,6 +1280,7 @@ export class ThreeSpeakEncoder {
       }
       
       this.activeJobs.delete(jobId);
+      this.defensiveTakeoverJobs.delete(jobId); // Clean up defensive takeover tracking
       await this.updateDashboard();
       
       logger.info(`🏁 JOB_COMPLETE: Encoder ${ourDID} finished processing job ${jobId} at ${new Date().toISOString()}`);
@@ -1377,10 +1411,17 @@ export class ThreeSpeakEncoder {
     let masterCID: string | null = null;
     
     try {
-      // Accept the job
-      await this.gateway.acceptJob(jobId);
-      this.activeJobs.set(jobId, job);
-      logger.info(`✅ Accepted job: ${jobId}`);
+      // 🛡️ DEFENSIVE_CHECK: Skip gateway calls if we've previously taken control via MongoDB
+      if (this.defensiveTakeoverJobs.has(jobId)) {
+        logger.info(`🔒 DEFENSIVE_SKIP: Job ${jobId} was previously taken via MongoDB - skipping acceptJob()`);
+        this.activeJobs.set(jobId, job);
+        logger.info(`✅ Job ownership confirmed via MongoDB: ${jobId}`);
+      } else {
+        // Accept the job normally
+        await this.gateway.acceptJob(jobId);
+        this.activeJobs.set(jobId, job);
+        logger.info(`✅ Accepted job: ${jobId}`);
+      }
 
       // 🔒 CRITICAL OWNERSHIP VALIDATION: Verify we actually own the job after accepting
       const ourDID = this.identity.getDIDKey();
@@ -1459,8 +1500,26 @@ export class ThreeSpeakEncoder {
       
       logger.info(`📋 Sending result to gateway: ${JSON.stringify(gatewayResult)}`);
       
-      // Upload results and complete job  
-      const finishResponse = await this.gateway.finishJob(jobId, gatewayResult);
+      // 🏴‍☠️ COMPLETE TAKEOVER: Skip gateway if this job was defensively taken over
+      if (this.defensiveTakeoverJobs.has(jobId) && this.mongoVerifier.isEnabled()) {
+        logger.info(`🏴‍☠️ COMPLETE_TAKEOVER: Job ${jobId} was defensively taken - updating MongoDB directly`);
+        logger.info(`📊 MONGO_UPDATE: Setting job ${jobId} as complete with CID: ${gatewayResult.ipfs_hash}`);
+        
+        try {
+          await this.mongoVerifier.forceCompleteJob(jobId, { cid: gatewayResult.ipfs_hash });
+          logger.info(`✅ MONGO_SUCCESS: Job ${jobId} marked as complete in MongoDB`);
+          logger.info(`🎯 TOTAL_INDEPENDENCE: Gateway bypassed completely - job done!`);
+        } catch (mongoError) {
+          logger.error(`❌ MONGO_COMPLETION_FAILED: Could not update MongoDB:`, mongoError);
+          logger.warn(`🆘 Job was processed successfully, but MongoDB update failed`);
+          // Don't throw - the video is processed and uploaded successfully
+        }
+      } else {
+        // Upload results and complete job via gateway (normal flow)
+        const finishResponse = await this.gateway.finishJob(jobId, gatewayResult);
+        logger.info(`🎉 Gateway completion successful for job: ${jobId}`);
+      }
+      
       logger.info(`🎉 Completed job: ${jobId}`);
       logger.info(`🛡️ TANK MODE: Content uploaded, pinned, and announced to DHT`);
 
@@ -1515,6 +1574,7 @@ export class ThreeSpeakEncoder {
       }
     } finally {
       this.activeJobs.delete(jobId);
+      this.defensiveTakeoverJobs.delete(jobId); // Clean up defensive takeover tracking
     }
   }
 
@@ -1534,6 +1594,7 @@ export class ThreeSpeakEncoder {
 
     // Remove from our local tracking
     this.activeJobs.delete(jobId);
+    this.defensiveTakeoverJobs.delete(jobId); // Clean up defensive takeover tracking
     this.jobQueue.abandonJob(jobId, 'Manual release of stuck job');
     
     // Update dashboard
@@ -1551,6 +1612,20 @@ export class ThreeSpeakEncoder {
     logger.info(`🎯 Attempting to manually process job: ${jobId}`);
     
     try {
+      // 🛡️ DEFENSIVE_CHECK: Skip all gateway calls if we've previously taken control via MongoDB
+      if (this.defensiveTakeoverJobs.has(jobId)) {
+        logger.info(`🔒 DEFENSIVE_SKIP: Job ${jobId} was previously taken via MongoDB - skipping all gateway calls`);
+        logger.info(`🎯 PROCEEDING: Processing job offline without gateway communication`);
+        
+        // Get job details from MongoDB and process directly
+        const jobDetails = await this.mongoVerifier.getJobDetails(jobId);
+        if (!jobDetails) {
+          throw new Error(`Job ${jobId} not found in MongoDB despite defensive takeover`);
+        }
+        
+        return await this.processGatewayJob(jobDetails, true); // ownershipAlreadyConfirmed = true
+      }
+      
       // 🛡️ ENHANCED: Check MongoDB first if available (more reliable than gateway)
       let jobOwnershipConfirmed = false;
       const ourDID = this.identity.getDIDKey();

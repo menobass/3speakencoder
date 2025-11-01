@@ -502,10 +502,14 @@
                 this.failedJobs = [];
                 this.gatewayConnected = null; // null = unknown, true = connected, false = disconnected
                 this.reconnectAttempts = 0;
-                this.maxReconnectAttempts = 10;
+                this.maxReconnectAttempts = Infinity; // ✅ Never stop trying to reconnect
+                this.lastHeartbeat = Date.now();
+                this.heartbeatInterval = null;
+                this.httpFallbackInterval = null;
                 
                 this.connect();
                 this.startUptimeCounter();
+                this.startHeartbeatMonitoring();
                 this.loadInitialStatus(); // Load status immediately
                 this.loadFailedJobs();
                 this.checkMongoDBAccess(); // Check MongoDB access for force processing
@@ -577,12 +581,15 @@
             onOpen() {
                 console.log('Connected to encoder dashboard');
                 this.reconnectAttempts = 0;
+                this.lastHeartbeat = Date.now();
                 this.updateConnectionStatus(true);
+                this.stopHttpFallback(); // Stop HTTP polling when WebSocket is working
             }
 
             onMessage(event) {
                 try {
                     const data = JSON.parse(event.data);
+                    this.lastHeartbeat = Date.now(); // ✅ Update heartbeat on any message
                     this.handleMessage(data);
                 } catch (error) {
                     console.error('Failed to parse message:', error);
@@ -592,6 +599,7 @@
             onClose() {
                 console.log('Disconnected from encoder dashboard');
                 this.updateConnectionStatus(false);
+                this.startHttpFallback(); // ✅ Start HTTP polling as fallback
                 this.scheduleReconnect();
             }
 
@@ -600,13 +608,13 @@
             }
 
             scheduleReconnect() {
-                if (this.reconnectAttempts < this.maxReconnectAttempts) {
-                    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
-                    setTimeout(() => {
-                        this.reconnectAttempts++;
-                        this.connect();
-                    }, delay);
-                }
+                // ✅ Always try to reconnect with exponential backoff (max 30 seconds)
+                const delay = Math.min(1000 * Math.pow(2, Math.min(this.reconnectAttempts, 5)), 30000);
+                setTimeout(() => {
+                    this.reconnectAttempts++;
+                    console.log(`Reconnection attempt ${this.reconnectAttempts} in ${delay}ms...`);
+                    this.connect();
+                }, delay);
             }
 
             handleMessage(message) {
@@ -736,7 +744,7 @@
                 const jobsHtml = this.availableJobs.map(job => `
                     <div class="job-item" style="border-left-color: ${job.status === 'running' ? '#10b981' : '#fbbf24'};">
                         <div class="job-header">
-                            <span class="job-id" title="${job.id}">${job.shortId}</span>
+                            <span class="job-id">${job.id}</span>
                             <span class="job-status ${job.status === 'running' ? 'status-running' : 'status-pending'}">${job.status}</span>
                         </div>
                         <div style="font-size: 14px; color: #a0a0a0;">
@@ -1070,6 +1078,62 @@
                         statusDiv.textContent = '';
                     }, 5000);
                 }
+            }
+
+            // Heartbeat monitoring and HTTP fallback methods
+            startHeartbeatMonitoring() {
+                if (this.heartbeatInterval) {
+                    clearInterval(this.heartbeatInterval);
+                }
+                
+                this.heartbeatInterval = setInterval(() => {
+                    const now = Date.now();
+                    const timeSinceLastHeartbeat = now - this.lastHeartbeat;
+                    
+                    // If no heartbeat for 60 seconds, switch to HTTP fallback
+                    if (timeSinceLastHeartbeat > 60000 && !this.isHttpFallbackActive) {
+                        console.log('WebSocket heartbeat timeout - switching to HTTP fallback');
+                        this.isHttpFallbackActive = true;
+                        this.startHttpFallback();
+                    }
+                }, 15000); // Check every 15 seconds
+            }
+
+            startHttpFallback() {
+                if (this.httpFallbackInterval) {
+                    clearInterval(this.httpFallbackInterval);
+                }
+                
+                console.log('Starting HTTP fallback polling...');
+                this.updateConnectionStatus(false); // Show as disconnected
+                
+                this.httpFallbackInterval = setInterval(async () => {
+                    try {
+                        // Poll status via HTTP
+                        const response = await fetch('/api/status');
+                        if (response.ok) {
+                            const data = await response.json();
+                            this.updateNodeStatus(data);
+                            
+                            // Try to reconnect WebSocket if status looks good
+                            if (data.online && !this.ws) {
+                                console.log('Node is online - attempting WebSocket reconnection...');
+                                this.connect();
+                            }
+                        }
+                    } catch (error) {
+                        console.log('HTTP fallback polling failed:', error);
+                    }
+                }, 10000); // Poll every 10 seconds
+            }
+
+            stopHttpFallback() {
+                if (this.httpFallbackInterval) {
+                    clearInterval(this.httpFallbackInterval);
+                    this.httpFallbackInterval = null;
+                }
+                this.isHttpFallbackActive = false;
+                console.log('HTTP fallback stopped - WebSocket connection restored');
             }
         }
 
