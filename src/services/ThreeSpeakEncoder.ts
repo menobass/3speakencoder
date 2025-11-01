@@ -998,23 +998,95 @@ export class ThreeSpeakEncoder {
         logger.info(`🔍 PLEASE_INVESTIGATE: New error type not in defensive handling logic`);
       }
       
-      // Report failure to gateway (but don't let gateway reporting errors affect retry logic)
-      try {
-        await this.gateway.failJob(jobId, {
-          error: errorMessage,
-          timestamp: new Date().toISOString(),
-          retryable: isRetryable,
-          encoder_version: '2.0.0' // Help identify new encoder issues
-        });
-        logger.info(`📤 Reported job failure to gateway: ${jobId}`);
-      } catch (reportError: any) {
-        if (reportError.response?.status === 500) {
-          logger.warn(`⚠️ Gateway server error (500) - may be due to DST/time change issues`);
-          logger.warn(`🕐 Encoder time: ${new Date().toISOString()}`);
-        } else {
-          logger.warn(`⚠️ Failed to report job failure to gateway for ${jobId}:`, reportError.message);
+      // 🔍 CRITICAL LOGIC FIX: Determine if we should report this as a failure
+      let shouldReportFailure = true;
+      let skipJobSilently = false;
+      
+      // Check if this was a job assignment uncertainty (not a real failure)
+      if (errorMessage.includes('status code 500')) {
+        // For HTTP 500 errors, check if we confirmed job ownership
+        try {
+          const forensicStatus = await this.gateway.getJobStatus(jobId);
+          if (forensicStatus.assigned_to && forensicStatus.assigned_to !== ourDID) {
+            // Job belongs to another encoder - this isn't our failure
+            logger.info(`🎯 JOB_SKIP: Job ${jobId} belongs to another encoder, not reporting failure`);
+            shouldReportFailure = false;
+            skipJobSilently = true;
+          } else if (!forensicStatus.assigned_to) {
+            // Job is unassigned - we never owned it
+            logger.info(`🎯 JOB_SKIP: Job ${jobId} was never assigned to us, not reporting failure`);
+            shouldReportFailure = false;
+            skipJobSilently = true;
+          }
+        } catch (forensicError) {
+          // If we can't verify ownership and have MongoDB access, try that
+          if (this.mongoVerifier.isEnabled()) {
+            try {
+              const mongoResult = await this.mongoVerifier.verifyJobOwnership(jobId, ourDID);
+              if (mongoResult.jobExists && !mongoResult.isOwned) {
+                logger.info(`🎯 MONGODB_CONFIRM: Job ${jobId} belongs to another encoder, not reporting failure`);
+                shouldReportFailure = false;
+                skipJobSilently = true;
+              } else if (!mongoResult.jobExists) {
+                logger.info(`🎯 MONGODB_CONFIRM: Job ${jobId} doesn't exist, not reporting failure`);
+                shouldReportFailure = false;
+                skipJobSilently = true;
+              }
+            } catch (mongoError) {
+              logger.warn(`⚠️ Could not verify job ownership via MongoDB: ${mongoError}`);
+              // Default to not reporting if we can't confirm ownership
+              shouldReportFailure = false;
+              skipJobSilently = true;
+            }
+          } else {
+            // No MongoDB access and can't confirm via gateway - don't report
+            logger.info(`🎯 DEFENSIVE: Cannot confirm job ownership, not reporting failure`);
+            shouldReportFailure = false;
+            skipJobSilently = true;
+          }
         }
-        // Don't throw here - we still want to handle the original job failure with retry logic
+      } else if (errorMessage.includes('Job already accepted by another encoder') || 
+                 errorMessage.includes('already assigned')) {
+        // Clear race condition - not our failure
+        logger.info(`🎯 JOB_SKIP: Job ${jobId} was claimed by another encoder, not reporting failure`);
+        shouldReportFailure = false;
+        skipJobSilently = true;
+      }
+      
+      // Only report failure if we confirmed we owned the job
+      if (shouldReportFailure) {
+        try {
+          await this.gateway.failJob(jobId, {
+            error: errorMessage,
+            timestamp: new Date().toISOString(),
+            retryable: isRetryable,
+            encoder_version: '2.0.0' // Help identify new encoder issues
+          });
+          logger.info(`📤 Reported job failure to gateway: ${jobId}`);
+        } catch (reportError: any) {
+          if (reportError.response?.status === 500) {
+            logger.warn(`⚠️ Gateway server error (500) - may be due to DST/time change issues`);
+            logger.warn(`🕐 Encoder time: ${new Date().toISOString()}`);
+          } else {
+            logger.warn(`⚠️ Failed to report job failure to gateway for ${jobId}:`, reportError.message);
+          }
+          // Don't throw here - we still want to handle the original job failure with retry logic
+        }
+      } else {
+        logger.info(`✅ JOB_SKIP: Not reporting failure for ${jobId} - job assignment was uncertain`);
+      }
+      
+      // If this was a job we never owned, don't treat it as a failure
+      if (skipJobSilently) {
+        logger.info(`🔄 JOB_SKIP: Silently moving to next job - ${jobId} was never ours`);
+        
+        // Clean up from active jobs since we're skipping
+        this.activeJobs.delete(jobId);
+        
+        // Log as completed (skipped) for tracking purposes
+        logger.info(`🏁 JOB_SKIPPED: Encoder ${ourDID} gracefully skipped job ${jobId} at ${new Date().toISOString()}`);
+        
+        return; // Exit gracefully without throwing error
       }
       
       throw error; // Re-throw to be handled by the main job processor
