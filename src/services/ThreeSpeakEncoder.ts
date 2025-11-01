@@ -680,9 +680,16 @@ export class ThreeSpeakEncoder {
                       throw new Error(`Both gateway and MongoDB assignment failed: ${errorMessage}`);
                     }
                   } else {
-                    // Job was assigned to someone else
+                    // Job was assigned to someone else - this is a GOOD thing, not a failure!
                     logger.info(`🏃‍♂️ RACE_CONDITION: Job ${jobId} was assigned to ${mongoResult.actualOwner} while we were trying`);
-                    throw new Error(`Job assigned to another encoder: ${mongoResult.actualOwner}`);
+                    logger.info(`🎉 GOOD_NEWS: Another encoder is handling this job - no work needed from us!`);
+                    logger.info(`🎯 GRACEFUL_SKIP: Moving on to next available job`);
+                    
+                    // This is NOT an error - it's a successful race condition resolution
+                    // We'll return gracefully and let the calling code handle this as a skip
+                    const raceConditionError = new Error(`RACE_CONDITION_SKIP: Job assigned to another encoder: ${mongoResult.actualOwner}`);
+                    (raceConditionError as any).isRaceCondition = true; // Flag for special handling
+                    throw raceConditionError;
                   }
                 } else {
                   logger.error(`🤔 JOB_NOT_FOUND: Job ${jobId} doesn't exist in MongoDB`);
@@ -1079,7 +1086,9 @@ export class ThreeSpeakEncoder {
       const gatewayErrorMessage = error instanceof Error ? error.message : String(error);
       const isRaceCondition = gatewayErrorMessage.includes('no longer available') || 
                              gatewayErrorMessage.includes('already assigned') ||
-                             gatewayErrorMessage.includes('not assigned');
+                             gatewayErrorMessage.includes('not assigned') ||
+                             gatewayErrorMessage.includes('RACE_CONDITION_SKIP') ||
+                             (error as any).isRaceCondition;
       
       // Only use MongoDB fallback if:
       // 1. We successfully processed the video (have CID)
@@ -1235,7 +1244,9 @@ export class ThreeSpeakEncoder {
           }
         }
       } else if (errorMessage.includes('Job already accepted by another encoder') || 
-                 errorMessage.includes('already assigned')) {
+                 errorMessage.includes('already assigned') ||
+                 errorMessage.includes('RACE_CONDITION_SKIP') ||
+                 (error as any).isRaceCondition) {
         // Clear race condition - not our failure
         logger.info(`🎯 JOB_SKIP: Job ${jobId} was claimed by another encoder, not reporting failure`);
         shouldReportFailure = false;
@@ -1542,7 +1553,9 @@ export class ThreeSpeakEncoder {
       const gatewayErrorMessage = error instanceof Error ? error.message : String(error);
       const isRaceCondition = gatewayErrorMessage.includes('no longer available') || 
                              gatewayErrorMessage.includes('already assigned') ||
-                             gatewayErrorMessage.includes('not assigned');
+                             gatewayErrorMessage.includes('not assigned') ||
+                             gatewayErrorMessage.includes('RACE_CONDITION_SKIP') ||
+                             (error as any).isRaceCondition;
       
       // Only use MongoDB fallback if:
       // 1. We successfully processed the video (have CID)
