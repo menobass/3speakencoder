@@ -618,7 +618,13 @@ export class ThreeSpeakEncoder {
           logger.info(`📞 CLAIMING: Calling acceptJob() for ${jobId}`);
           
           try {
-            await this.gateway.acceptJob(jobId);
+            // 🚀 TIMEOUT_FALLBACK: Set a reasonable timeout for acceptJob() to prevent long hangs
+            const acceptJobPromise = this.gateway.acceptJob(jobId);
+            const timeoutPromise = new Promise((_, reject) => {
+              setTimeout(() => reject(new Error('acceptJob timeout - gateway too slow')), 10000); // 10 second timeout
+            });
+            
+            await Promise.race([acceptJobPromise, timeoutPromise]);
             logger.info(`✅ Successfully claimed gateway job: ${jobId}`);
             
             // Re-check status after claiming

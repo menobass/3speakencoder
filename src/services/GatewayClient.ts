@@ -51,7 +51,7 @@ export class GatewayClient {
   /**
    * Simple GET wrapper with retries and exponential backoff for transient network/gateway issues.
    */
-  private async getWithRetries<T = any>(path: string, opts: any = {}): Promise<T> {
+  private async getWithRetries<T = any>(path: string, opts: any = {}, context: string = ''): Promise<T> {
   const rg = (this.config.remote_gateway as any) || {};
   const maxRetries = rg.retries || 3;
   const baseDelay = rg.retryBaseDelayMs || 1000;
@@ -66,7 +66,8 @@ export class GatewayClient {
         if (!shouldRetry || isLast) throw err;
 
         const delay = baseDelay * Math.pow(2, attempt - 1);
-        logger.warn(`⚠️ GET ${path} failed (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms:`, err.message || err.code);
+        const contextStr = context ? ` [${context}]` : '';
+        logger.warn(`⚠️ GET ${path}${contextStr} failed (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms:`, err.message || err.code);
         await new Promise(r => setTimeout(r, delay));
       }
     }
@@ -76,7 +77,7 @@ export class GatewayClient {
   /**
    * Simple POST wrapper with retries and exponential backoff for transient network/gateway issues.
    */
-  private async postWithRetries<T = any>(path: string, payload: any, opts: any = {}): Promise<T> {
+  private async postWithRetries<T = any>(path: string, payload: any, opts: any = {}, context: string = ''): Promise<T> {
   const rg = (this.config.remote_gateway as any) || {};
   const maxRetries = rg.retries || 3;
   const baseDelay = rg.retryBaseDelayMs || 1000;
@@ -91,7 +92,8 @@ export class GatewayClient {
         if (!shouldRetry || isLast) throw err;
 
         const delay = baseDelay * Math.pow(2, attempt - 1);
-        logger.warn(`⚠️ POST ${path} failed (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms:`, err.message || err.code);
+        const contextStr = context ? ` [${context}]` : '';
+        logger.warn(`⚠️ POST ${path}${contextStr} failed (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms:`, err.message || err.code);
         await new Promise(r => setTimeout(r, delay));
       }
     }
@@ -191,7 +193,7 @@ export class GatewayClient {
     const jws = await this.identity.createJWS({ job_id: jobId });
 
     try {
-      await this.postWithRetries('/api/v0/gateway/acceptJob', { jws });
+      await this.postWithRetries('/api/v0/gateway/acceptJob', { jws }, {}, `job:${jobId}`);
       logger.debug(`✅ Successfully accepted job: ${jobId}`);
     } catch (error) {
       // Handle "job already accepted by another encoder" scenario
@@ -224,7 +226,7 @@ export class GatewayClient {
 
     const jws = await this.identity.createJWS({ job_id: jobId });
     
-    await this.postWithRetries('/api/v0/gateway/rejectJob', { jws });
+    await this.postWithRetries('/api/v0/gateway/rejectJob', { jws }, {}, `job:${jobId}`);
   }
 
   async failJob(jobId: string, errorDetails: any): Promise<void> {
@@ -243,7 +245,7 @@ export class GatewayClient {
       
       const jws = await this.identity.createJWS(payload);
 
-      await this.postWithRetries('/api/v0/gateway/failJob', { jws });
+      await this.postWithRetries('/api/v0/gateway/failJob', { jws }, {}, `job:${jobId}`);
       
     } catch (error: any) {
       // 🚨 DST/Gateway Fix: Don't fail the encoder if gateway reporting fails
@@ -279,7 +281,7 @@ export class GatewayClient {
     const jws = await this.identity.createJWS(payload);
 
     try {
-      return await this.postWithRetries('/api/v0/gateway/finishJob', { jws });
+      return await this.postWithRetries('/api/v0/gateway/finishJob', { jws }, {}, `job:${jobId}`);
     } catch (error) {
       // Handle "job already completed by another encoder" scenario
       if (axios.isAxiosError(error)) {
@@ -345,7 +347,7 @@ export class GatewayClient {
     // Legacy expects progressPct + download_pct, NOT generic status
     const jws = await this.identity.createJWS(payload);
 
-    await this.postWithRetries('/api/v0/gateway/pingJob', { jws });
+    await this.postWithRetries('/api/v0/gateway/pingJob', { jws }, {}, `job:${jobId}`);
   }
 
   async cancelJob(jobId: string): Promise<void> {
@@ -363,7 +365,7 @@ export class GatewayClient {
   }
 
   async getJobStatus(jobId: string): Promise<any> {
-    return await this.getWithRetries(`/api/v0/gateway/jobstatus/${jobId}`);
+    return await this.getWithRetries(`/api/v0/gateway/jobstatus/${jobId}`, {}, `job:${jobId}`);
   }
 
   /**
