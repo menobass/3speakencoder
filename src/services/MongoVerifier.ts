@@ -449,6 +449,78 @@ export class MongoVerifier {
   }
 
   /**
+   * 🛡️ PRE-PROCESSING CHECK: Ensure job status is set to "running" before encoding begins
+   * This is a final safety check to ensure MongoDB reflects the actual processing state
+   */
+  async ensureJobRunning(jobId: string, encoderDID: string): Promise<void> {
+    if (!this.isEnabled()) {
+      logger.debug(`⏩ SKIP: MongoDB not enabled, cannot update job status`);
+      return;
+    }
+
+    try {
+      logger.info(`🔍 PRE-PROCESS_CHECK: Verifying job ${jobId} status before encoding...`);
+      
+      // Check current job state
+      const currentJob = await this.jobs!.findOne({ id: jobId });
+      
+      if (!currentJob) {
+        logger.warn(`⚠️ Job ${jobId} not found in MongoDB - cannot update status`);
+        return;
+      }
+
+      // Determine what needs to be updated
+      const needsStatusUpdate = currentJob.status !== 'running';
+      const needsAssignmentUpdate = !currentJob.assigned_to || currentJob.assigned_to === 'null';
+      const needsTimestampUpdate = !currentJob.assigned_date;
+
+      if (!needsStatusUpdate && !needsAssignmentUpdate && !needsTimestampUpdate) {
+        logger.info(`✅ STATUS_OK: Job ${jobId} already marked as running with correct assignment`);
+        return;
+      }
+
+      // Build update object
+      const updates: any = {};
+      
+      if (needsStatusUpdate) {
+        updates.status = 'running';
+        logger.info(`📝 UPDATE: Setting status = "running"`);
+      }
+      
+      if (needsAssignmentUpdate) {
+        updates.assigned_to = encoderDID;
+        logger.info(`📝 UPDATE: Setting assigned_to = "${encoderDID}"`);
+      }
+      
+      if (needsTimestampUpdate) {
+        updates.assigned_date = new Date();
+        logger.info(`📝 UPDATE: Setting assigned_date = ${new Date().toISOString()}`);
+      }
+
+      // Also update last_pinged to show activity
+      updates.last_pinged = new Date();
+
+      // Perform the update
+      const result = await this.jobs!.updateOne(
+        { id: jobId },
+        { $set: updates }
+      );
+
+      if (result.modifiedCount > 0) {
+        logger.info(`✅ STATUS_UPDATED: Job ${jobId} MongoDB status synchronized before processing`);
+        logger.info(`📊 Changes applied: ${Object.keys(updates).join(', ')}`);
+      } else {
+        logger.warn(`⚠️ No changes made to job ${jobId} - may have been updated concurrently`);
+      }
+
+    } catch (error) {
+      // Don't fail the job if MongoDB update fails - encoding can proceed
+      logger.error(`❌ Failed to update job ${jobId} status (non-fatal):`, error);
+      logger.warn(`🆗 Proceeding with encoding anyway - MongoDB status update is not critical`);
+    }
+  }
+
+  /**
    * Get detailed job status from MongoDB for verification
    */
   async getJobStatusUpdate(jobId: string): Promise<{

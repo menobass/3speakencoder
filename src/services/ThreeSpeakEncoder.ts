@@ -903,6 +903,12 @@ export class ThreeSpeakEncoder {
           this.dashboard.updateJobProgress(job.id, 95, 'notifying-gateway');
         }
       } else {
+        // 🛡️ FINAL_STATUS_CHECK: Ensure MongoDB reflects we're about to process this job
+        // This is the last checkpoint before encoding - ensures status=running and timestamps are set
+        if (this.mongoVerifier.isEnabled()) {
+          await this.mongoVerifier.ensureJobRunning(jobId, ourDID);
+        }
+        
         // Set current job ID for dashboard progress tracking
         this.processor.setCurrentJob(job.id);
         
@@ -1478,6 +1484,11 @@ export class ThreeSpeakEncoder {
 
       // Set current job ID for dashboard progress tracking
       this.processor.setCurrentJob(jobId);
+
+      // 🛡️ FINAL_STATUS_CHECK: Ensure MongoDB reflects we're about to process this job
+      if (this.mongoVerifier.isEnabled()) {
+        await this.mongoVerifier.ensureJobRunning(jobId, this.identity.getDIDKey());
+      }
 
       // Process the video
       const result = await this.processor.processVideo(job, (progress: EncodingProgress) => {
