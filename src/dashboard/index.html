@@ -319,6 +319,23 @@
             font-size: 11px;
         }
 
+        .btn-dismiss {
+            background: transparent;
+            border: none;
+            color: #9ca3af;
+            font-size: 20px;
+            cursor: pointer;
+            padding: 0 8px;
+            margin-left: 8px;
+            transition: all 0.2s;
+            line-height: 1;
+        }
+
+        .btn-dismiss:hover {
+            color: #ef4444;
+            transform: scale(1.2);
+        }
+
         @media (max-width: 768px) {
             .grid {
                 grid-template-columns: 1fr;
@@ -390,6 +407,22 @@
                 <div class="stat-item">
                     <span class="stat-label">Uptime:</span>
                     <span class="stat-value" id="uptime">Loading...</span>
+                </div>
+            </div>
+
+            <div class="card" id="rescueStatsCard" style="display: none;">
+                <h3>🚁 Rescue Mode</h3>
+                <div class="stat-item">
+                    <span class="stat-label">Status:</span>
+                    <span class="stat-value" id="rescueModeStatus">Inactive</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Jobs Rescued:</span>
+                    <span class="stat-value" id="rescuedJobsCount">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Last Rescue:</span>
+                    <span class="stat-value" id="lastRescueTime">Never</span>
                 </div>
             </div>
         </div>
@@ -500,6 +533,8 @@
                 this.jobs = new Map();
                 this.availableJobs = [];
                 this.failedJobs = [];
+                this.dismissedJobIds = this.loadDismissedJobs(); // ✅ Load persisted dismissals
+                this.hasSeenRescue = false; // Track if we've ever seen rescue mode active
                 this.gatewayConnected = null; // null = unknown, true = connected, false = disconnected
                 this.reconnectAttempts = 0;
                 this.maxReconnectAttempts = Infinity; // ✅ Never stop trying to reconnect
@@ -675,6 +710,26 @@
                 document.getElementById('totalJobs').textContent = status.totalJobs || 0;
                 document.getElementById('lastJobCheck').textContent = 
                     status.lastJobCheck ? new Date(status.lastJobCheck).toLocaleTimeString() : 'Never';
+                
+                // Update rescue mode statistics if available
+                if (status.rescueStats) {
+                    const rescueCard = document.getElementById('rescueStatsCard');
+                    if (status.rescueStats.rescuedJobsCount > 0 || this.hasSeenRescue) {
+                        rescueCard.style.display = 'block';
+                        this.hasSeenRescue = true;
+                        
+                        document.getElementById('rescueModeStatus').textContent = 'Active';
+                        document.getElementById('rescueModeStatus').style.color = '#10b981';
+                        document.getElementById('rescuedJobsCount').textContent = status.rescueStats.rescuedJobsCount || 0;
+                        
+                        if (status.rescueStats.lastRescueTime) {
+                            const lastRescue = new Date(status.rescueStats.lastRescueTime);
+                            document.getElementById('lastRescueTime').textContent = lastRescue.toLocaleString();
+                        } else {
+                            document.getElementById('lastRescueTime').textContent = 'Never';
+                        }
+                    }
+                }
             }
 
             updateJob(jobData) {
@@ -811,18 +866,34 @@
             renderFailedJobs() {
                 const jobsList = document.getElementById('failedJobsList');
                 
-                if (this.failedJobs.length === 0) {
-                    jobsList.innerHTML = '<div class="no-jobs">No failed jobs</div>';
+                // Filter out dismissed jobs
+                const visibleFailedJobs = this.failedJobs.filter(job => !this.dismissedJobIds.has(job.id));
+                
+                if (visibleFailedJobs.length === 0) {
+                    const hasDismissed = this.dismissedJobIds.size > 0;
+                    jobsList.innerHTML = `
+                        <div class="no-jobs">No failed jobs</div>
+                        ${hasDismissed ? `
+                            <div style="text-align: center; margin-top: 10px;">
+                                <button class="btn btn-secondary" onclick="dashboard.clearDismissedJobs()" style="font-size: 12px;">
+                                    🔄 Show ${this.dismissedJobIds.size} Dismissed Job${this.dismissedJobIds.size > 1 ? 's' : ''}
+                                </button>
+                            </div>
+                        ` : ''}
+                    `;
                     return;
                 }
 
-                const jobsHtml = this.failedJobs.map(job => `
-                    <div class="failed-job-item">
+                const jobsHtml = visibleFailedJobs.map(job => `
+                    <div class="failed-job-item" data-job-id="${job.id}">
                         <div class="job-header">
                             <span class="job-id">${job.id}</span>
                             <div>
                                 ${job.retryCount > 0 ? `<span class="retry-badge">Attempt ${job.retryCount}</span>` : ''}
                                 <span class="job-status" style="background: #7f1d1d; color: #fca5a5;">Failed</span>
+                                <button class="btn-dismiss" onclick="dashboard.dismissFailedJob('${job.id}')" title="Dismiss this failed job">
+                                    ✕
+                                </button>
                             </div>
                         </div>
                         <div style="font-size: 14px; color: #a0a0a0; margin: 5px 0;">
@@ -850,7 +921,16 @@
                     </div>
                 `).join('');
 
-                jobsList.innerHTML = jobsHtml;
+                // Add "Show dismissed" button if there are dismissed jobs
+                const dismissedButton = this.dismissedJobIds.size > 0 ? `
+                    <div style="text-align: center; margin-top: 15px; padding-top: 15px; border-top: 1px solid #374151;">
+                        <button class="btn btn-secondary" onclick="dashboard.clearDismissedJobs()" style="font-size: 12px;">
+                            🔄 Show ${this.dismissedJobIds.size} Dismissed Job${this.dismissedJobIds.size > 1 ? 's' : ''}
+                        </button>
+                    </div>
+                ` : '';
+
+                jobsList.innerHTML = jobsHtml + dismissedButton;
             }
 
             async processManualJob() {
@@ -987,6 +1067,44 @@
                 } catch (error) {
                     this.showManualJobStatus(`❌ Retry error: ${error.message}`, 'error');
                 }
+            }
+
+            dismissFailedJob(jobId) {
+                // Add to dismissed jobs set and persist
+                this.dismissedJobIds.add(jobId);
+                this.saveDismissedJobs();
+                
+                // Remove job from the failed jobs list
+                this.failedJobs = this.failedJobs.filter(job => job.id !== jobId);
+                this.renderFailedJobs();
+                
+                // Show confirmation message
+                this.showManualJobStatus(`🗑️ Failed job ${jobId} dismissed permanently`, 'info');
+            }
+
+            loadDismissedJobs() {
+                try {
+                    const dismissed = localStorage.getItem('dismissedFailedJobs');
+                    return dismissed ? new Set(JSON.parse(dismissed)) : new Set();
+                } catch (error) {
+                    console.error('Failed to load dismissed jobs:', error);
+                    return new Set();
+                }
+            }
+
+            saveDismissedJobs() {
+                try {
+                    localStorage.setItem('dismissedFailedJobs', JSON.stringify([...this.dismissedJobIds]));
+                } catch (error) {
+                    console.error('Failed to save dismissed jobs:', error);
+                }
+            }
+
+            clearDismissedJobs() {
+                this.dismissedJobIds.clear();
+                this.saveDismissedJobs();
+                this.renderFailedJobs();
+                this.showManualJobStatus(`✅ All dismissed jobs restored`, 'success');
             }
 
             async checkJobStatus(jobId) {

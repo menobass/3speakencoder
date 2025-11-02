@@ -33,6 +33,13 @@ export class ThreeSpeakEncoder {
   private readonly maxGatewayFailures: number = 3; // Mark offline after 3 consecutive failures
   private lastGatewaySuccess: Date = new Date();
   private startTime = new Date();
+  
+  // 🚁 Rescue Mode: Auto-claim abandoned jobs
+  private rescuedJobsCount: number = 0;
+  private lastRescueTime: Date | null = null;
+  private readonly rescueCheckInterval: number = 60 * 1000; // Check every 60 seconds
+  private readonly abandonedThreshold: number = 5 * 60 * 1000; // 5 minutes
+  private readonly maxRescuesPerCycle: number = 2; // Max 2 jobs per rescue cycle
 
   constructor(config: EncoderConfig, dashboard?: DashboardService) {
     this.config = config;
@@ -171,6 +178,10 @@ export class ThreeSpeakEncoder {
           maxFailures: this.maxGatewayFailures,
           lastSuccess: this.lastGatewaySuccess.toISOString(),
           timeSinceLastSuccess: Date.now() - this.lastGatewaySuccess.getTime()
+        },
+        rescueStats: {
+          rescuedJobsCount: this.rescuedJobsCount,
+          lastRescueTime: this.lastRescueTime?.toISOString() || null
         }
       });
     }
@@ -254,6 +265,9 @@ export class ThreeSpeakEncoder {
     
     // Start dashboard heartbeat to keep status fresh
     this.startDashboardHeartbeat();
+    
+    // 🚁 Start rescue mode if MongoDB is enabled
+    this.startRescueMode();
   }
 
   private startJobProcessor(): void {
@@ -365,7 +379,189 @@ export class ThreeSpeakEncoder {
   }
 
   /**
-   * 🚨 MEMORY SAFE: Fire-and-forget ping job to prevent promise accumulation
+   * � RESCUE MODE: Auto-claim abandoned jobs when gateway is completely down
+   * 
+   * This is the ultimate failsafe layer that runs every 60 seconds to check for
+   * jobs that have been sitting unassigned for 5+ minutes. When the gateway is
+   * completely dead and jobs are piling up, this system automatically rescues them.
+   * 
+   * Safety features:
+   * - Only rescues jobs in "queued" status (never steals from other encoders)
+   * - 5-minute abandon threshold to avoid false positives
+   * - Rate limited to max 2 jobs per cycle
+   * - Only runs if MongoDB is enabled
+   * - Full defensive takeover tracking
+   */
+  private startRescueMode(): void {
+    if (!this.mongoVerifier.isEnabled()) {
+      logger.info('ℹ️ Rescue Mode disabled - MongoDB not enabled');
+      return;
+    }
+
+    logger.info('🚁 RESCUE MODE: Starting abandoned job rescue system');
+    logger.info(`🚁 Config: Check every ${this.rescueCheckInterval / 1000}s, abandon threshold ${this.abandonedThreshold / 1000 / 60}min, max ${this.maxRescuesPerCycle} jobs/cycle`);
+
+    // Run rescue check every 60 seconds
+    setInterval(async () => {
+      if (!this.isRunning) return;
+
+      try {
+        await this.checkForAbandonedJobs();
+      } catch (error) {
+        logger.warn('⚠️ Rescue mode check failed:', error);
+      }
+    }, this.rescueCheckInterval);
+
+    logger.info('✅ Rescue Mode active - will auto-claim abandoned jobs');
+  }
+
+  /**
+   * Check for abandoned jobs and rescue them
+   */
+  private async checkForAbandonedJobs(): Promise<void> {
+    try {
+      // Get all available jobs from MongoDB
+      const availableJobs = await this.mongoVerifier.getAvailableGatewayJobs();
+      
+      if (availableJobs.length === 0) {
+        logger.debug('🚁 RESCUE: No jobs available for rescue check');
+        return;
+      }
+
+      // Filter to only "queued" jobs (never steal "running" jobs)
+      const queuedJobs = availableJobs.filter(job => job.status === 'queued');
+      
+      if (queuedJobs.length === 0) {
+        logger.debug(`🚁 RESCUE: ${availableJobs.length} total jobs, but none in "queued" status`);
+        return;
+      }
+
+      // Find jobs abandoned for 5+ minutes
+      const now = Date.now();
+      const abandonedJobs = queuedJobs.filter(job => {
+        const createdAt = new Date(job.createdAt).getTime();
+        const ageMs = now - createdAt;
+        return ageMs >= this.abandonedThreshold;
+      });
+
+      if (abandonedJobs.length === 0) {
+        logger.debug(`🚁 RESCUE: ${queuedJobs.length} queued jobs, but none abandoned 5+ minutes`);
+        return;
+      }
+
+      logger.info(`🚁 RESCUE OPPORTUNITY: Found ${abandonedJobs.length} abandoned jobs (queued 5+ minutes)`);
+
+      // Rate limit: max 2 jobs per rescue cycle
+      const jobsToRescue = abandonedJobs.slice(0, this.maxRescuesPerCycle);
+      
+      if (jobsToRescue.length < abandonedJobs.length) {
+        logger.info(`🚁 RATE LIMIT: Rescuing ${jobsToRescue.length} of ${abandonedJobs.length} abandoned jobs (max ${this.maxRescuesPerCycle} per cycle)`);
+      }
+
+      // Attempt to rescue each job
+      for (const job of jobsToRescue) {
+        try {
+          await this.rescueAbandonedJob(job);
+        } catch (error) {
+          logger.warn(`⚠️ Failed to rescue job ${job.id}:`, error);
+        }
+      }
+
+    } catch (error) {
+      logger.error('❌ Abandoned job check failed:', error);
+    }
+  }
+
+  /**
+   * Rescue a single abandoned job
+   */
+  private async rescueAbandonedJob(job: any): Promise<void> {
+    const jobId = job.id;
+    const ageMinutes = Math.floor((Date.now() - new Date(job.createdAt).getTime()) / 1000 / 60);
+
+    logger.info(`🚁 RESCUE ATTEMPT: Job ${jobId} (${job.owner}/${job.permlink})`);
+    logger.info(`🚁 Job age: ${ageMinutes} minutes, size: ${job.sizeFormatted}`);
+
+    try {
+      // Use MongoDB defensive takeover to claim the job
+      const myDID = this.identity.getDIDKey();
+      
+      logger.info(`🚁 CLAIMING: Attempting defensive takeover via MongoDB...`);
+      await this.mongoVerifier.forceAssignJob(jobId, myDID);
+      
+      // Track as defensive takeover job
+      this.defensiveTakeoverJobs.add(jobId);
+      
+      // Update rescue statistics
+      this.rescuedJobsCount++;
+      this.lastRescueTime = new Date();
+      
+      logger.info(`✅ RESCUED: Successfully claimed abandoned job ${jobId}`);
+      logger.info(`📊 RESCUE STATS: Total rescued: ${this.rescuedJobsCount}`);
+      
+      // Fetch complete job details and process
+      logger.info(`🎬 PROCESSING: Fetching complete job details for rescued job...`);
+      
+      try {
+        // Get complete job from MongoDB
+        const jobDocument = await this.mongoVerifier.getJobDetails(jobId);
+        
+        if (jobDocument) {
+          logger.info(`✅ Fetched complete job details for ${jobId}`);
+          
+          // Process the job directly (it's already assigned to us via forceAssignJob)
+          await this.processGatewayJob(jobDocument, true); // ownershipAlreadyConfirmed = true
+          
+          logger.info(`✅ Rescued job ${jobId} processing started`);
+          
+          // Update dashboard
+          await this.updateDashboard();
+          
+        } else {
+          logger.warn(`⚠️ Could not fetch complete job details for ${jobId} - skipping processing`);
+        }
+        
+      } catch (fetchError) {
+        logger.error(`❌ Failed to fetch/process rescued job ${jobId}:`, fetchError);
+        // Don't throw - we successfully claimed it, just couldn't process it
+      }
+      
+    } catch (error: any) {
+      // Check if this is a "job already assigned" error (race condition with another encoder)
+      if (error?.message?.includes('already assigned')) {
+        logger.info(`ℹ️ RESCUE SKIP: Job ${jobId} was claimed by another encoder during rescue attempt`);
+      } else {
+        logger.error(`❌ RESCUE FAILED: Could not claim job ${jobId}:`, error);
+        throw error;
+      }
+    }
+  }
+
+  /*
+   * Convert MongoDB job document to VideoJob format
+   * NOTE: Currently unused - rescued jobs use getJobDetails() and processGatewayJob() directly
+   */
+  /*
+  private convertMongoJobToVideoJob(doc: any): VideoJob {
+    return {
+      id: doc.id,
+      owner: doc.metadata?.video_owner || '',
+      permlink: doc.metadata?.video_permlink || '',
+      size: doc.input?.size || 0,
+      created_at: doc.created_at ? new Date(doc.created_at).toISOString() : new Date().toISOString(),
+      input: {
+        uri: doc.input?.uri || '',
+        size: doc.input?.size || 0
+      },
+      status: doc.status,
+      assigned_to: doc.assigned_to,
+      assigned_date: doc.assigned_date ? new Date(doc.assigned_date).toISOString() : null
+    };
+  }
+  */
+
+  /**
+   * �🚨 MEMORY SAFE: Fire-and-forget ping job to prevent promise accumulation
    */
   private safePingJob(jobId: string, status: any): void {
     // Use setImmediate to ensure this runs asynchronously without creating
