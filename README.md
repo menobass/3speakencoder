@@ -86,7 +86,8 @@ A modern, reliable replacement for the 3Speak video encoder with **dual-mode ope
 - 🏠 **Local Fallback Pinning**: 3Speak nodes can pin locally when supernode is overloaded
 - 📊 **Pin Database**: SQLite tracking of local pins with automatic sync service
 - 🛡️ **MongoDB Verification**: Direct database fallback for 3Speak infrastructure nodes
-- � **Force Processing**: Complete gateway bypass for emergency job processing (3Speak infrastructure)
+- 🚁 **Rescue Mode**: Auto-claims abandoned jobs during gateway outages (5-min threshold, 2 jobs/cycle)
+- 🔧 **Force Processing**: Complete gateway bypass for emergency job processing (3Speak infrastructure)
 - 📱 **Mobile Dashboard Control**: Phone-manageable encoder with force processing capabilities
 - ⚡ **Smart Retry System**: Cache results, skip wasteful re-processing on retries
 - 🔍 **Clean Error Logging**: No more buffer dumps, user-friendly error messages
@@ -264,6 +265,44 @@ When `MONGODB_VERIFICATION_ENABLED=true`, the encoder gains **Force Processing**
 - 3Speak infrastructure node access
 - Used only for emergency situations when gateway is unreliable
 
+### 🚁 Rescue Mode (3Speak Infrastructure Only)
+
+When `MONGODB_VERIFICATION_ENABLED=true`, the encoder automatically activates **Rescue Mode** - the ultimate failsafe for complete gateway outages:
+
+**🚨 Automatic Job Recovery:**
+- **Auto-Detection**: Runs every 60 seconds checking for abandoned jobs
+- **5-Minute Threshold**: Only claims jobs stuck in "queued" status for 5+ minutes
+- **Rate Limited**: Max 2 jobs per rescue cycle (prevents overload)
+- **Safe Operation**: Never steals "running" jobs from other encoders
+- **Zero Intervention**: Completely automatic during gateway failures
+
+**📊 Dashboard Integration:**
+- **Rescue Statistics Card**: Shows total rescued jobs and last rescue time
+- **Real-Time Updates**: Live statistics via WebSocket
+- **Auto-Display**: Card appears automatically when first rescue occurs
+
+**🛡️ Safety Features:**
+- Status filtering (only "queued" jobs)
+- Age threshold prevents false positives
+- Race condition protection
+- Defensive takeover tracking
+- MongoDB security checks
+
+**How It Works:**
+1. Monitors MongoDB every 60 seconds for abandoned jobs
+2. Identifies jobs in "queued" status for 5+ minutes
+3. Auto-claims up to 2 jobs per cycle via MongoDB
+4. Processes jobs offline (complete gateway bypass)
+5. Updates completion status directly in database
+
+**Perfect For:**
+- Complete gateway outages (API returns 500 errors continuously)
+- Prolonged infrastructure issues
+- Emergency video processing needs
+- Autonomous operation during maintenance windows
+
+See `docs/RESCUE_MODE.md` for complete technical documentation.
+
 ### IPFS Cluster Pinning (Optional)
 
 ⚠️ **Note**: Currently only works for encoders running on the supernode itself due to localhost-only API access.
@@ -410,6 +449,68 @@ MAX_CONCURRENT_JOBS=4
 # ⚠️ CRITICAL: Required for persistent identity
 ENCODER_PRIVATE_KEY=your-generated-key-from-first-run
 ```
+
+#### Example 4: 3Speak Infrastructure Node (Maximum Resilience)
+For 3Speak-operated infrastructure nodes with MongoDB access:
+
+```bash
+HIVE_USERNAME=infrastructure-node
+REMOTE_GATEWAY_ENABLED=true
+DIRECT_API_ENABLED=true
+MAX_CONCURRENT_JOBS=4
+
+# ⚠️ CRITICAL: Required for persistent identity
+ENCODER_PRIVATE_KEY=your-generated-key-from-first-run
+
+# 🛡️ MongoDB Direct Verification (3Speak Infrastructure Only)
+MONGODB_VERIFICATION_ENABLED=true
+MONGODB_URI=mongodb://username:password@host:port/database
+DATABASE_NAME=spk-encoder-gateway
+
+# 🚁 Automatic Features When MongoDB Enabled:
+# - Direct database verification (bypasses gateway failures)
+# - Force processing capability (emergency job processing)
+# - Rescue Mode (auto-claims abandoned jobs every 60s)
+# - Complete gateway independence during outages
+```
+
+## 🛡️ Resilience Architecture (3Speak Infrastructure)
+
+When MongoDB verification is enabled, the encoder operates with **5 layers of resilience**:
+
+### Layer 1: Normal Gateway Operation
+- Standard API calls to gateway
+- Job polling, acceptance, progress reporting
+- Normal completion workflow
+
+### Layer 2: MongoDB Verification
+- Activates when gateway returns errors
+- Verifies job ownership directly in database
+- Provides ground-truth about job state
+- Continues processing despite gateway issues
+
+### Layer 3: Defensive Takeover
+- Triggered when gateway APIs completely fail
+- Claims jobs directly via MongoDB
+- Skips all gateway communication for claimed jobs
+- Enables offline processing
+
+### Layer 4: Direct Completion
+- Updates job completion status directly in MongoDB
+- Bypasses failing gateway reporting APIs
+- Ensures videos process even when gateway is down
+- Results persist in database for gateway to sync later
+
+### Layer 5: Rescue Mode (Ultimate Failsafe)
+- Auto-activates during prolonged gateway outages
+- Monitors abandoned jobs every 60 seconds
+- Auto-claims jobs stuck 5+ minutes in "queued" status
+- Rate limited (max 2 jobs/cycle) for safety
+- **Zero manual intervention required**
+
+**Result**: Encoder continues processing videos **completely autonomously** during gateway failures. When gateway recovers, it syncs from MongoDB truth.
+
+See `docs/RESCUE_MODE.md` for complete technical documentation.
 
 ## 🚀 Usage
 
