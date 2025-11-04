@@ -444,20 +444,43 @@ export class DashboardService {
       job.retryable = this.isRetryableError(error);
       job.retryCount = job.retryCount || 0;
       
-      // Add to failed jobs list (keep last 20)
-      this.failedJobs.unshift({
-        id: jobId,
-        videoId: job.video_id || job.id,
-        error: error,
-        timestamp: job.endTime,
-        retryable: job.retryable,
-        retryCount: job.retryCount
-      });
-      if (this.failedJobs.length > 20) {
-        this.failedJobs = this.failedJobs.slice(0, 20);
+      // 🏃‍♂️ Check if this is a race condition (job claimed by another encoder)
+      const isRaceCondition = error.includes('RACE_CONDITION_SKIP') ||
+                             error.includes('no longer available') ||
+                             error.includes('already assigned') ||
+                             error.includes('Job assigned to another encoder') ||
+                             error.includes('assigned to another encoder');
+      
+      // Only add to failed jobs list if it's NOT a race condition
+      if (!isRaceCondition) {
+        // Add to failed jobs list (keep last 20)
+        this.failedJobs.unshift({
+          id: jobId,
+          videoId: job.video_id || job.id,
+          error: error,
+          timestamp: job.endTime,
+          retryable: job.retryable,
+          retryCount: job.retryCount
+        });
+        if (this.failedJobs.length > 20) {
+          this.failedJobs = this.failedJobs.slice(0, 20);
+        }
+        
+        // Broadcast failed jobs update only for real failures
+        this.broadcast({
+          type: 'job',
+          data: {
+            action: 'failed_jobs_updated',
+            failedJobs: this.failedJobs
+          },
+          timestamp: new Date().toISOString()
+        });
+      } else {
+        // Race condition - log but don't add to failed jobs
+        console.log(`🏃‍♂️ RACE_CONDITION_SKIP: Job ${jobId} claimed by another encoder - not adding to failed jobs list`);
       }
       
-      // Move to history
+      // Move to history regardless of race condition status
       this.jobHistory.unshift(job);
       if (this.jobHistory.length > 50) {
         this.jobHistory = this.jobHistory.slice(0, 50);
@@ -468,16 +491,6 @@ export class DashboardService {
       
       // Update active jobs count
       this.updateNodeStatus({ activeJobs: this.activeJobs.size });
-      
-      // Broadcast failed jobs update
-      this.broadcast({
-        type: 'job',
-        data: {
-          action: 'failed_jobs_updated',
-          failedJobs: this.failedJobs
-        },
-        timestamp: new Date().toISOString()
-      });
     }
   }
 
