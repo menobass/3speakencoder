@@ -745,20 +745,35 @@
                     return;
                 }
 
-                const jobsHtml = Array.from(this.jobs.values()).map(job => `
-                    <div class="job-item">
-                        <div class="job-header">
-                            <span class="job-id">${job.id}</span>
-                            <span class="job-status status-${job.status}">${job.status}</span>
-                        </div>
-                        <div>${job.title || 'Video Processing'}</div>
-                        ${job.progress !== undefined ? `
-                            <div class="progress-bar">
-                                <div class="progress-fill" style="width: ${job.progress}%"></div>
+                const jobsHtml = Array.from(this.jobs.values()).map(job => {
+                    // Format size for display
+                    const formatSize = (bytes) => {
+                        if (!bytes) return '';
+                        const mb = (bytes / (1024 * 1024)).toFixed(1);
+                        const gb = (bytes / (1024 * 1024 * 1024)).toFixed(2);
+                        return bytes > 1024 * 1024 * 1024 ? `${gb} GB` : `${mb} MB`;
+                    };
+
+                    const sizeInfo = job.size ? ` • ${formatSize(job.size)}` : '';
+                    const ownerInfo = job.owner && job.permlink ? `${job.owner}/${job.permlink}` : (job.video_id || '');
+                    
+                    return `
+                        <div class="job-item">
+                            <div class="job-header">
+                                <span class="job-id" title="${job.id}">${job.id.split('-')[0]}</span>
+                                <span class="job-status status-${job.status}">${job.status}</span>
                             </div>
-                        ` : ''}
-                    </div>
-                `).join('');
+                            <div style="font-size: 13px; color: #a0a0a0; margin: 5px 0;">
+                                ${ownerInfo}${sizeInfo}
+                            </div>
+                            ${job.progress !== undefined ? `
+                                <div class="progress-bar">
+                                    <div class="progress-fill" style="width: ${job.progress}%"></div>
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                }).join('');
 
                 jobsList.innerHTML = jobsHtml;
             }

@@ -780,6 +780,9 @@ export class ThreeSpeakEncoder {
       this.dashboard.startJob(job.id, {
         type: 'gateway',
         video_id: job.metadata?.video_permlink || job.id,
+        owner: job.metadata?.video_owner || 'unknown',
+        permlink: job.metadata?.video_permlink || 'unknown',
+        size: job.input?.size || 0,
         input_uri: job.input?.uri || 'unknown',
         profiles: job.profiles?.map((p: any) => p.name) || ['1080p', '720p', '480p']
       });
