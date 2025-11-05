@@ -1356,7 +1356,8 @@ export class ThreeSpeakEncoder {
       logger.info(`🛡️ TANK MODE: Content uploaded, pinned, and announced to DHT`);
 
     } catch (error) {
-      logger.error(`❌ Gateway job ${jobId} failed:`, cleanErrorForLogging(error));
+      // 🔍 CRITICAL: Don't log as "failed" yet - might be a race condition we need to skip
+      logger.warn(`⚠️ Gateway job ${jobId} encountered error (investigating...):`, cleanErrorForLogging(error));
       
       // 🛡️ MONGODB FALLBACK: If we have the CID and MongoDB access, try to complete directly
       const gatewayErrorMessage = error instanceof Error ? error.message : String(error);
@@ -1581,6 +1582,9 @@ export class ThreeSpeakEncoder {
         
         return; // Exit gracefully without throwing error
       }
+      
+      // 🚨 CONFIRMED FAILURE: This is a real failure we owned
+      logger.error(`❌ Gateway job ${jobId} FAILED (confirmed our job):`, cleanErrorForLogging(error));
       
       throw error; // Re-throw to be handled by the main job processor
     } finally {
