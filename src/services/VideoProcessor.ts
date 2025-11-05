@@ -380,6 +380,39 @@ export class VideoProcessor {
           const bitDepth = this.getPixelFormatBitDepth(pixelFormat);
           const colorSpace = videoStream?.color_space;
           const colorTransfer = videoStream?.color_transfer;
+
+          // 📱 ROTATION DETECTION: Check for iPhone/mobile rotation metadata
+          let rotationDegrees = 0;
+          
+          // Check multiple sources for rotation information
+          // 1. Stream-level rotation tag
+          if (videoStream?.tags?.rotate) {
+            rotationDegrees = parseInt(videoStream.tags.rotate);
+          }
+          
+          // 2. Stream-level side_data (more reliable for MOV files)
+          if (!rotationDegrees && (videoStream as any)?.side_data_list) {
+            const rotationData = (videoStream as any).side_data_list.find((sd: any) => 
+              sd.side_data_type === 'Display Matrix' || sd.rotation !== undefined
+            );
+            if (rotationData?.rotation !== undefined) {
+              rotationDegrees = -rotationData.rotation; // FFmpeg uses negative rotation
+            }
+          }
+          
+          // 3. Format-level rotation (fallback)
+          if (!rotationDegrees && metadata.format?.tags?.rotate) {
+            rotationDegrees = parseInt(String(metadata.format.tags.rotate));
+          }
+          
+          // Normalize rotation to 0, 90, 180, 270
+          if (rotationDegrees) {
+            rotationDegrees = ((rotationDegrees % 360) + 360) % 360;
+            if (rotationDegrees % 90 !== 0) {
+              logger.warn(`⚠️ Unusual rotation angle: ${rotationDegrees}°, will round to nearest 90°`);
+              rotationDegrees = Math.round(rotationDegrees / 90) * 90;
+            }
+          }
           
           // Check for HDR metadata
           const hdrMetadata = colorTransfer === 'smpte2084' || 
@@ -423,6 +456,16 @@ export class VideoProcessor {
             });
           }
 
+          // Issue: Video rotation (iPhone/mobile videos)
+          if (rotationDegrees !== 0) {
+            issues.push({
+              severity: 'warning',
+              type: 'video_rotation',
+              message: `Video has ${rotationDegrees}° rotation metadata (likely iPhone/mobile)`,
+              suggestion: 'Will auto-rotate video during encoding to fix sideways/upside-down display'
+            });
+          }
+
           // Issue: HDR metadata
           if (hdrMetadata) {
             issues.push({
@@ -461,6 +504,7 @@ export class VideoProcessor {
             pixelFormat,
             bitDepth,
             hdrMetadata,
+            rotationDegrees,
             resolution: {
               width: videoStream?.width || 1920,
               height: videoStream?.height || 1080
@@ -562,7 +606,32 @@ export class VideoProcessor {
       reasons.push(`convert ${probe.bitDepth}-bit to 8-bit yuv420p`);
     }
 
-    // 3. iPhone .mov specific handling
+    // 3. Auto-rotate video based on metadata (iPhone/mobile videos)
+    if (probe.rotationDegrees !== 0) {
+      // Apply rotation using transpose filter for 90° increments
+      switch (probe.rotationDegrees) {
+        case 90:
+          strategy.videoFilters.push('transpose=1'); // 90° clockwise
+          reasons.push('auto-rotate 90° clockwise');
+          break;
+        case 180:
+          strategy.videoFilters.push('transpose=2,transpose=2'); // 180° (two 90° rotations)
+          reasons.push('auto-rotate 180°');
+          break;
+        case 270:
+          strategy.videoFilters.push('transpose=2'); // 90° counter-clockwise
+          reasons.push('auto-rotate 270° (90° counter-clockwise)');
+          break;
+        default:
+          // For non-standard angles, use rotate filter
+          const radians = (probe.rotationDegrees * Math.PI) / 180;
+          strategy.videoFilters.push(`rotate=${radians}:fillcolor=black:ow=rotw(${radians}):oh=roth(${radians})`);
+          reasons.push(`auto-rotate ${probe.rotationDegrees}°`);
+          break;
+      }
+    }
+
+    // 4. iPhone .mov specific handling
     if (probe.container === 'mov' && probe.extraStreams.length > 0) {
       strategy.extraOptions.push('-movflags', '+faststart');
       reasons.push('iPhone .mov file - add faststart flag');

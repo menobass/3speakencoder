@@ -127,6 +127,7 @@ export interface FileProbeResult {
   colorSpace?: string;           // 'bt709', 'bt2020', 'smpte170m'
   colorTransfer?: string;        // 'bt709', 'smpte2084' (HDR), 'arib-std-b67' (HLG)
   hdrMetadata: boolean;          // Dolby Vision, HDR10, HDR10+
+  rotationDegrees: number;       // 0, 90, 180, 270 - iPhone/mobile rotation
   resolution: {
     width: number;
     height: number;
