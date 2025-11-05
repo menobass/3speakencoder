@@ -1,6 +1,6 @@
 import ffmpeg from 'fluent-ffmpeg';
 import { EncoderConfig } from '../config/ConfigLoader.js';
-import { VideoJob, EncodedOutput, CodecCapability, EncodingProgress } from '../types/index.js';
+import { VideoJob, EncodedOutput, CodecCapability, EncodingProgress, FileProbeResult, ProbeIssue, StreamInfo, EncodingStrategy } from '../types/index.js';
 import { logger } from './Logger.js';
 import { promises as fs } from 'fs';
 import { createWriteStream } from 'fs';
@@ -352,6 +352,239 @@ export class VideoProcessor {
     });
   }
 
+  /**
+   * 🔍 Probe input file to detect format, codecs, and compatibility issues
+   * Uses ffprobe to analyze the file before encoding
+   */
+  private async probeInputFile(filePath: string): Promise<FileProbeResult> {
+    return new Promise((resolve, reject) => {
+      ffmpeg.ffprobe(filePath, (err, metadata) => {
+        if (err) {
+          logger.error(`❌ Failed to probe file ${filePath}:`, err);
+          return reject(err);
+        }
+
+        try {
+          // Find video and audio streams
+          const videoStream = metadata.streams.find(s => s.codec_type === 'video');
+          const audioStream = metadata.streams.find(s => s.codec_type === 'audio');
+          const extraStreams = metadata.streams.filter(s => 
+            s.codec_type !== 'video' && s.codec_type !== 'audio'
+          );
+
+          // Extract key information
+          const container = metadata.format?.format_name?.split(',')[0] || 'unknown';
+          const videoCodec = videoStream?.codec_name || 'unknown';
+          const audioCodec = audioStream?.codec_name || 'unknown';
+          const pixelFormat = videoStream?.pix_fmt || 'yuv420p';
+          const bitDepth = this.getPixelFormatBitDepth(pixelFormat);
+          const colorSpace = videoStream?.color_space;
+          const colorTransfer = videoStream?.color_transfer;
+          
+          // Check for HDR metadata
+          const hdrMetadata = colorTransfer === 'smpte2084' || 
+                             colorTransfer === 'arib-std-b67' ||
+                             (videoStream as any)?.side_data_list?.some((sd: any) => 
+                               sd.side_data_type === 'Mastering display metadata' ||
+                               sd.side_data_type === 'Content light level metadata'
+                             );
+
+          // Collect extra streams info
+          const streamInfos: StreamInfo[] = extraStreams.map(s => {
+            const info: StreamInfo = {
+              index: s.index,
+              type: s.codec_type || 'data'
+            };
+            if (s.codec_name) info.codec = s.codec_name;
+            if (s.tags) info.tags = s.tags as Record<string, string>;
+            return info;
+          });
+
+          // Detect issues
+          const issues: ProbeIssue[] = [];
+          
+          // Issue: Extra metadata streams (iPhone MOV files)
+          if (extraStreams.length > 0) {
+            issues.push({
+              severity: 'warning',
+              type: 'extra_streams',
+              message: `File contains ${extraStreams.length} non-media stream(s) (metadata, subtitles, etc.)`,
+              suggestion: 'Will use -map 0:v:0 -map 0:a:0 to select only video and audio'
+            });
+          }
+
+          // Issue: 10-bit or higher color depth
+          if (bitDepth > 8) {
+            issues.push({
+              severity: 'warning',
+              type: 'high_bit_depth',
+              message: `Video uses ${bitDepth}-bit color depth (${pixelFormat})`,
+              suggestion: 'Will convert to 8-bit yuv420p for web compatibility'
+            });
+          }
+
+          // Issue: HDR metadata
+          if (hdrMetadata) {
+            issues.push({
+              severity: 'info',
+              type: 'hdr_metadata',
+              message: `Video contains HDR metadata (${colorTransfer})`,
+              suggestion: 'Will flatten to SDR for universal compatibility'
+            });
+          }
+
+          // Issue: HEVC/H.265 codec (might need special handling)
+          if (videoCodec === 'hevc' || videoCodec === 'h265') {
+            issues.push({
+              severity: 'info',
+              type: 'hevc_input',
+              message: 'Video encoded with HEVC/H.265',
+              suggestion: 'Will use appropriate hardware decoder if available'
+            });
+          }
+
+          // Issue: Non-standard framerates
+          const framerate = videoStream?.r_frame_rate ? this.parseFramerate(videoStream.r_frame_rate) : 30;
+          if (framerate > 60) {
+            issues.push({
+              severity: 'warning',
+              type: 'high_framerate',
+              message: `High framerate detected: ${framerate}fps`,
+              suggestion: 'Will normalize to 30fps for HLS streaming'
+            });
+          }
+
+          const result: FileProbeResult = {
+            container,
+            videoCodec,
+            audioCodec,
+            pixelFormat,
+            bitDepth,
+            hdrMetadata,
+            resolution: {
+              width: videoStream?.width || 1920,
+              height: videoStream?.height || 1080
+            },
+            framerate,
+            duration: metadata.format?.duration || 0,
+            videoStreamCount: metadata.streams.filter(s => s.codec_type === 'video').length,
+            audioStreamCount: metadata.streams.filter(s => s.codec_type === 'audio').length,
+            extraStreams: streamInfos,
+            issues,
+            rawMetadata: metadata
+          };
+          
+          // Add optional properties only if they exist
+          if (colorSpace) result.colorSpace = colorSpace;
+          if (colorTransfer) result.colorTransfer = colorTransfer;
+          if (metadata.format?.bit_rate) result.bitrate = parseInt(String(metadata.format.bit_rate));
+
+          logger.info(`🔍 File probe complete: ${container}/${videoCodec}/${pixelFormat} ${result.resolution.width}x${result.resolution.height}@${framerate}fps`);
+          if (issues.length > 0) {
+            logger.info(`⚠️ Detected ${issues.length} compatibility issue(s):`);
+            issues.forEach(issue => {
+              logger.info(`   ${issue.severity.toUpperCase()}: ${issue.message}`);
+            });
+          }
+
+          resolve(result);
+        } catch (parseError) {
+          logger.error(`❌ Failed to parse probe metadata:`, parseError);
+          reject(parseError);
+        }
+      });
+    });
+  }
+
+  /**
+   * Get bit depth from pixel format string
+   */
+  private getPixelFormatBitDepth(pixelFormat: string): number {
+    const bitDepthMap: Record<string, number> = {
+      'yuv420p': 8,
+      'yuvj420p': 8,
+      'yuv422p': 8,
+      'yuv444p': 8,
+      'yuv420p10le': 10,
+      'yuv420p10be': 10,
+      'yuv422p10le': 10,
+      'yuv422p10be': 10,
+      'yuv444p10le': 10,
+      'yuv444p10be': 10,
+      'yuv420p12le': 12,
+      'yuv420p12be': 12,
+      'yuv422p12le': 12,
+      'yuv422p12be': 12,
+      'yuv444p12le': 12,
+      'yuv444p12be': 12,
+      'yuv420p16le': 16,
+      'yuv420p16be': 16
+    };
+    return bitDepthMap[pixelFormat] || 8;
+  }
+
+  /**
+   * Parse ffmpeg framerate fraction (e.g., "30000/1001" -> 29.97)
+   */
+  private parseFramerate(frameRateStr: string): number {
+    const parts = frameRateStr.split('/');
+    if (parts.length === 2) {
+      return parseInt(parts[0]!) / parseInt(parts[1]!);
+    }
+    return parseFloat(frameRateStr);
+  }
+
+  /**
+   * 🎯 Determine encoding strategy based on probe results
+   * Returns optimized ffmpeg options for the detected file format
+   */
+  private determineEncodingStrategy(probe: FileProbeResult): EncodingStrategy {
+    const strategy: EncodingStrategy = {
+      inputOptions: [],
+      mapOptions: [],
+      videoFilters: [],
+      codecPriority: [],
+      extraOptions: [],
+      reason: ''
+    };
+
+    const reasons: string[] = [];
+
+    // 1. Handle extra metadata streams (iPhone .mov files)
+    if (probe.extraStreams.length > 0) {
+      strategy.mapOptions.push('-map', '0:v:0', '-map', '0:a:0');
+      reasons.push(`exclude ${probe.extraStreams.length} metadata stream(s)`);
+    }
+
+    // 2. Handle high bit depth / HDR content
+    if (probe.bitDepth > 8 || probe.hdrMetadata) {
+      strategy.videoFilters.push('format=yuv420p');
+      reasons.push(`convert ${probe.bitDepth}-bit to 8-bit yuv420p`);
+    }
+
+    // 3. iPhone .mov specific handling
+    if (probe.container === 'mov' && probe.extraStreams.length > 0) {
+      strategy.extraOptions.push('-movflags', '+faststart');
+      reasons.push('iPhone .mov file - add faststart flag');
+    }
+
+    // 4. HEVC input - prefer hardware decoders
+    if (probe.videoCodec === 'hevc' || probe.videoCodec === 'h265') {
+      // Hardware decoder will be selected by existing codec detection
+      reasons.push('HEVC input - will use hardware decoder if available');
+    }
+
+    // 5. High framerate normalization
+    if (probe.framerate > 60) {
+      // FPS filter already applied in encoding, just note it
+      reasons.push(`normalize ${probe.framerate}fps to 30fps`);
+    }
+
+    strategy.reason = reasons.length > 0 ? reasons.join(', ') : 'standard processing';
+    
+    return strategy;
+  }
+
   async processVideo(
     job: VideoJob,
     progressCallback?: (progress: EncodingProgress) => void,
@@ -370,6 +603,25 @@ export class VideoProcessor {
       const sourceFile = join(workDir, 'source.mp4');
       logger.info(`📥 Downloading source video for job ${jobId}`);
       await this.downloadVideo(job.input.uri, sourceFile);
+      
+      // 🔍 NEW: Probe input file to detect format and compatibility issues
+      logger.info(`🔍 Probing input file for compatibility...`);
+      let probeResult: FileProbeResult | null = null;
+      let encodingStrategy: EncodingStrategy | null = null;
+      
+      try {
+        probeResult = await this.probeInputFile(sourceFile);
+        encodingStrategy = this.determineEncodingStrategy(probeResult);
+        
+        logger.info(`✅ Probe complete - Strategy: ${encodingStrategy.reason}`);
+        
+        if (probeResult.issues.length > 0) {
+          logger.info(`🛠️ Will apply ${probeResult.issues.length} compatibility fix(es)`);
+        }
+      } catch (probeError) {
+        logger.warn(`⚠️ File probe failed, will use standard encoding:`, probeError);
+        // Continue with standard encoding if probe fails
+      }
       
       // Process each quality profile
       const outputs: EncodedOutput[] = [];
@@ -396,7 +648,8 @@ export class VideoProcessor {
                 percent: totalProgress
               });
             }
-          }
+          },
+          encodingStrategy // Pass the encoding strategy
         );
         
         outputs.push(output);
@@ -722,7 +975,8 @@ export class VideoProcessor {
     sourceFile: string,
     profile: { name: string; height: number },
     workDir: string,
-    progressCallback?: (progress: number) => void
+    progressCallback?: (progress: number) => void,
+    strategy?: EncodingStrategy | null
   ): Promise<EncodedOutput> {
     const profileDir = join(workDir, profile.name);
     await fs.mkdir(profileDir, { recursive: true });
@@ -768,7 +1022,8 @@ export class VideoProcessor {
           outputPath,
           codec,
           isHardware ? 60000 : 1800000, // 1 min for hardware, 30 min for software
-          progressCallback
+          progressCallback,
+          strategy // Pass the encoding strategy
         );
         
         logger.info(`✅ ${profile.name} encoding SUCCESS with ${codec.name}`);
@@ -808,7 +1063,8 @@ export class VideoProcessor {
     outputPath: string,
     codec: { name: string; type: string },
     timeoutMs: number,
-    progressCallback?: (progress: number) => void
+    progressCallback?: (progress: number) => void,
+    strategy?: EncodingStrategy | null
   ): Promise<EncodedOutput> {
     return new Promise((resolve, reject) => {
       // Get profile-specific settings matching Eddie's script
@@ -816,6 +1072,12 @@ export class VideoProcessor {
       
       // 🚀 Configure encoding based on codec type
       let command = ffmpeg(sourceFile);
+      
+      // 🎯 Apply input options from strategy (if available)
+      if (strategy?.inputOptions && strategy.inputOptions.length > 0) {
+        logger.debug(`🛠️ Applying strategy input options: ${strategy.inputOptions.join(' ')}`);
+        strategy.inputOptions.forEach(opt => command = command.inputOptions(opt));
+      }
       
       if (codec.name === 'h264_vaapi') {
         // AMD/Intel VAAPI - Full hardware pipeline
@@ -861,6 +1123,33 @@ export class VideoProcessor {
           .addOption('-b:v', profileSettings.bitrate)
           .addOption('-maxrate', profileSettings.maxrate)
           .addOption('-bufsize', profileSettings.bufsize);
+      }
+      
+      // 🎯 Apply video filters from strategy (pixel format conversion, etc.)
+      if (strategy?.videoFilters && strategy.videoFilters.length > 0) {
+        const existingFilters = codec.name === 'libx264' ? `scale=-2:${profile.height},fps=30` : '';
+        const strategyFiltersStr = strategy.videoFilters.join(',');
+        
+        // Combine strategy filters with existing filters
+        if (existingFilters && !existingFilters.includes(strategyFiltersStr)) {
+          command = command.addOption('-vf', `${strategyFiltersStr},${existingFilters}`);
+          logger.debug(`🛠️ Applied combined video filters: ${strategyFiltersStr},${existingFilters}`);
+        } else if (!existingFilters) {
+          command = command.addOption('-vf', strategyFiltersStr);
+          logger.debug(`🛠️ Applied strategy video filters: ${strategyFiltersStr}`);
+        }
+      }
+      
+      // 🎯 Apply stream mapping from strategy (for iPhone .mov files with extra streams)
+      if (strategy?.mapOptions && strategy.mapOptions.length > 0) {
+        logger.debug(`🛠️ Applying stream mapping: ${strategy.mapOptions.join(' ')}`);
+        strategy.mapOptions.forEach(opt => command = command.outputOptions(opt));
+      }
+      
+      // 🎯 Apply extra options from strategy (e.g., -movflags +faststart)
+      if (strategy?.extraOptions && strategy.extraOptions.length > 0) {
+        logger.debug(`🛠️ Applying extra options: ${strategy.extraOptions.join(' ')}`);
+        strategy.extraOptions.forEach(opt => command = command.outputOptions(opt));
       }
       
       // Common settings for all codecs

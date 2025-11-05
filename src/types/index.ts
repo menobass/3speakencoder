@@ -117,5 +117,55 @@ export interface SystemCapabilities {
   };
 }
 
+// File probe types for intelligent encoding
+export interface FileProbeResult {
+  container: string;              // 'mov', 'mp4', 'avi', 'mkv'
+  videoCodec: string;            // 'hevc', 'h264', 'prores', 'vp9'
+  audioCodec: string;            // 'aac', 'ac3', 'pcm', 'opus'
+  pixelFormat: string;           // 'yuv420p', 'yuv420p10le', 'yuv422p'
+  bitDepth: number;              // 8, 10, 12
+  colorSpace?: string;           // 'bt709', 'bt2020', 'smpte170m'
+  colorTransfer?: string;        // 'bt709', 'smpte2084' (HDR), 'arib-std-b67' (HLG)
+  hdrMetadata: boolean;          // Dolby Vision, HDR10, HDR10+
+  resolution: {
+    width: number;
+    height: number;
+  };
+  framerate: number;
+  duration: number;
+  bitrate?: number;
+  videoStreamCount: number;
+  audioStreamCount: number;
+  extraStreams: StreamInfo[];    // Non-video/audio streams (metadata, subtitles, etc.)
+  issues: ProbeIssue[];          // Detected compatibility issues
+  rawMetadata?: any;             // Full ffprobe output for debugging
+}
+
+export interface StreamInfo {
+  index: number;
+  type: string;                  // 'data', 'subtitle', 'attachment'
+  codec?: string;
+  tags?: Record<string, string>;
+}
+
+export interface ProbeIssue {
+  severity: 'warning' | 'error' | 'info';
+  type: string;                  // 'unsupported_codec', 'extra_streams', 'hdr_metadata', etc.
+  message: string;
+  suggestion?: string;           // How to fix it
+}
+
+export interface EncodingStrategy {
+  inputOptions: string[];        // Pre-processing flags (e.g., -hwaccel)
+  mapOptions: string[];          // Stream selection (e.g., -map 0:v:0 -map 0:a:0)
+  videoFilters: string[];        // Pixel format conversion, scaling
+  codecPriority: string[];       // Preferred codecs for this input type
+  extraOptions: string[];        // Additional ffmpeg flags
+  reason: string;                // Why this strategy was chosen (for logging)
+}
+
+// Re-export DirectApi types
+export * from './DirectApi.js';
+
 // Re-export DirectApi types
 export * from './DirectApi.js';
