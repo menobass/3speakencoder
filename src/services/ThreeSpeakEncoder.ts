@@ -11,6 +11,7 @@ import { JobQueue } from './JobQueue.js';
 import { JobProcessor } from './JobProcessor.js';
 import { PendingPinService } from './PendingPinService.js';
 import { MongoVerifier } from './MongoVerifier.js';
+import { GatewayAidService } from './GatewayAidService.js';
 import cron from 'node-cron';
 import { randomUUID } from 'crypto';
 import { cleanErrorForLogging } from '../common/errorUtils.js';
@@ -26,6 +27,7 @@ export class ThreeSpeakEncoder {
   private jobQueue: JobQueue;
   private pendingPinService: PendingPinService;
   private mongoVerifier: MongoVerifier;
+  private gatewayAid: GatewayAidService;
   private isRunning: boolean = false;
   private activeJobs: Map<string, any> = new Map();
   private defensiveTakeoverJobs: Set<string> = new Set(); // Track jobs we've taken via MongoDB fallback
@@ -51,6 +53,7 @@ export class ThreeSpeakEncoder {
     this.processor = new VideoProcessor(config, this.ipfs, dashboard);
     this.gateway = new GatewayClient(config);
     this.mongoVerifier = new MongoVerifier(config);
+    this.gatewayAid = new GatewayAidService(config, this.identity);
     this.jobQueue = new JobQueue(
       config.encoder?.max_concurrent_jobs || 1,
       5, // maxRetries (increased for gateway server issues)
@@ -103,6 +106,13 @@ export class ThreeSpeakEncoder {
       } catch (error) {
         logger.warn('⚠️ MongoDB direct verification failed to initialize:', error);
         logger.warn('🔄 Encoder will continue without MongoDB fallback');
+      }
+      
+      // Initialize Gateway Aid (optional - will skip if disabled)
+      if (this.gatewayAid.isEnabled()) {
+        logger.info('✅ Gateway Aid fallback ready (approved community node)');
+      } else {
+        logger.info('ℹ️ Gateway Aid fallback disabled');
       }
       
       // Start DirectApiService if enabled
@@ -769,6 +779,7 @@ export class ThreeSpeakEncoder {
     let completedResult: any = null;
     let masterCID: string | null = null;
     let usedMongoDBFallback: boolean = false; // Track if we used MongoDB to confirm ownership
+    let usedGatewayAidFallback: boolean = false; // Track if we used Gateway Aid fallback
     
     this.activeJobs.set(jobId, job);
     
@@ -840,10 +851,11 @@ export class ThreeSpeakEncoder {
             // 🛡️ DEFENSIVE CLAIMING: Gateway failed to assign job - investigate and take control
             const errorMessage = acceptError instanceof Error ? acceptError.message : String(acceptError);
             logger.error(`❌ GATEWAY_CLAIM_FAILED: acceptJob() failed for ${jobId}:`, errorMessage);
-            logger.info(`🔍 DEFENSIVE_MODE: Investigating job status via MongoDB before giving up...`);
             
-            // Check MongoDB to see if the job is still unassigned
+            // Try MongoDB fallback first (infrastructure nodes)
             if (this.mongoVerifier.isEnabled()) {
+              logger.info(`🔍 DEFENSIVE_MODE: Investigating job status via MongoDB before giving up...`);
+              
               try {
                 const mongoResult = await this.mongoVerifier.verifyJobOwnership(jobId, ourDID);
                 
@@ -897,11 +909,32 @@ export class ThreeSpeakEncoder {
                 
               } catch (mongoError) {
                 logger.error(`❌ MONGODB_VERIFICATION_FAILED: Could not check job status in MongoDB:`, mongoError);
-                throw new Error(`Gateway failed and MongoDB verification failed: ${errorMessage}`);
+                throw acceptError; // Rethrow original error
+              }
+            } 
+            // Try Gateway Aid fallback (approved community nodes)
+            else if (this.gatewayAid.isEnabled()) {
+              logger.info(`🆘 GATEWAY_AID: Attempting to claim job via REST API fallback...`);
+              
+              try {
+                const claimed = await this.gatewayAid.claimJob(jobId);
+                
+                if (claimed) {
+                  logger.info(`✅ GATEWAY_AID_SUCCESS: Job ${jobId} claimed via REST API`);
+                  logger.info(`🎯 PROCEEDING: Using Gateway Aid for rest of this job`);
+                  usedGatewayAidFallback = true; // 🎯 CRITICAL: Mark that we used Gateway Aid fallback
+                } else {
+                  logger.error(`❌ GATEWAY_AID_FAILED: Could not claim job ${jobId} via REST API`);
+                  throw new Error(`Both gateway websocket and Gateway Aid failed: ${errorMessage}`);
+                }
+              } catch (aidError) {
+                logger.error(`❌ GATEWAY_AID_ERROR: Exception while claiming job via REST:`, aidError);
+                throw new Error(`Both gateway websocket and Gateway Aid failed: ${errorMessage}`);
               }
             } else {
-              logger.error(`🔒 MONGODB_DISABLED: Cannot perform defensive takeover - MongoDB access required`);
-              throw acceptError; // Re-throw original error
+              // No fallback available
+              logger.error(`❌ NO_FALLBACK: No MongoDB or Gateway Aid fallback available`);
+              throw acceptError; // Rethrow original error
             }
           }
         } else {
@@ -1079,15 +1112,22 @@ export class ThreeSpeakEncoder {
       // Update status to running using legacy-compatible format
       job.status = JobStatus.RUNNING;
       
-      // 🎯 SKIP_GATEWAY_PINGS: Skip when in manual mode OR when using MongoDB fallback
-      if (!ownershipAlreadyConfirmed && !usedMongoDBFallback) {
+      // 🎯 SKIP_GATEWAY_PINGS: Skip when in manual mode OR when using fallback (MongoDB/Gateway Aid)
+      if (!ownershipAlreadyConfirmed && !usedMongoDBFallback && !usedGatewayAidFallback) {
         await this.gateway.pingJob(jobId, { 
           progressPct: 1.0,    // ⚠️ CRITICAL: Must be > 1 to trigger gateway status change
           download_pct: 100    // Download complete at this point
         });
       } else {
-        const reason = ownershipAlreadyConfirmed ? "ownership pre-confirmed (manual)" : "MongoDB fallback used";
+        const reason = ownershipAlreadyConfirmed ? "ownership pre-confirmed (manual)" : 
+                       usedMongoDBFallback ? "MongoDB fallback used" : 
+                       "Gateway Aid fallback used";
         logger.info(`🎯 SKIP_GATEWAY_PING: Skipping gateway ping - ${reason}, processing without gateway notifications`);
+        
+        // Send Gateway Aid progress update if using Gateway Aid
+        if (usedGatewayAidFallback) {
+          await this.gatewayAid.updateJobProgress(jobId, 1);
+        }
       }
 
       let result: any;
@@ -1118,13 +1158,18 @@ export class ThreeSpeakEncoder {
             this.dashboard.updateJobProgress(job.id, progress.percent);
           }
           
-          // 🎯 SKIP_GATEWAY_PINGS: Skip progress pings when offline or in manual mode
-          if (!ownershipAlreadyConfirmed && !usedMongoDBFallback) {
+          // 🎯 SKIP_GATEWAY_PINGS: Skip progress pings when offline or in manual mode or using fallback
+          if (!ownershipAlreadyConfirmed && !usedMongoDBFallback && !usedGatewayAidFallback) {
             // Update progress with gateway (fire-and-forget to prevent memory leaks) - LEGACY FORMAT
             this.safePingJob(jobId, { 
               progress: progress.percent,        // Our internal format
               progressPct: progress.percent,     // Legacy gateway format
               download_pct: 100                  // Download always complete during encoding
+            });
+          } else if (usedGatewayAidFallback) {
+            // Send Gateway Aid progress update
+            this.gatewayAid.updateJobProgress(jobId, progress.percent).catch(err => {
+              logger.warn(`⚠️ Gateway Aid progress update failed (non-critical):`, err);
             });
           }
         });
@@ -1213,47 +1258,73 @@ export class ThreeSpeakEncoder {
       logger.info(`🔍 DEBUG: Verification phase complete, proceeding to gateway notification...`);
       logger.info(`📋 Sending result to gateway: ${JSON.stringify(gatewayResult)}`);
       
-      // Complete the job with gateway (skip if offline or in manual mode)
+      // Complete the job with gateway (skip if offline or in manual mode or using fallback)
       let finishResponse: any = {};
       
-      if (!ownershipAlreadyConfirmed && !usedMongoDBFallback) {
+      if (!ownershipAlreadyConfirmed && !usedMongoDBFallback && !usedGatewayAidFallback) {
         logger.info(`🔍 DEBUG: About to call gateway.finishJob for ${jobId}...`);
         finishResponse = await this.gateway.finishJob(jobId, gatewayResult);
         logger.info(`🔍 DEBUG: Gateway finishJob response received:`, finishResponse);
       } else {
-        const reason = ownershipAlreadyConfirmed ? "manual mode" : "MongoDB fallback (gateway unreliable)";
+        const reason = ownershipAlreadyConfirmed ? "manual mode" : 
+                       usedMongoDBFallback ? "MongoDB fallback (gateway unreliable)" :
+                       "Gateway Aid fallback (gateway unreliable)";
         logger.info(`🎯 SKIP_GATEWAY_FINISH: Skipping gateway.finishJob - ${reason}`);
         
-        // 🏴‍☠️ COMPLETE TAKEOVER: Update MongoDB directly when gateway is unreliable
-        // 🏴‍☠️ AGGRESSIVE TAKEOVER: Use MongoDB for completion in these cases:
-        // 1. Used MongoDB fallback during processing (usedMongoDBFallback)
-        // 2. Job was defensively taken over (this.defensiveTakeoverJobs.has)
-        // 3. Manual job processing (ownershipAlreadyConfirmed) - prefer MongoDB over unreliable gateway
-        const shouldUseMongoTakeover = (usedMongoDBFallback || 
-                                       this.defensiveTakeoverJobs.has(jobId) || 
-                                       ownershipAlreadyConfirmed) && 
-                                       this.mongoVerifier.isEnabled();
-        
-        if (shouldUseMongoTakeover) {
-          const reason = usedMongoDBFallback ? "MongoDB fallback used" : 
-                        this.defensiveTakeoverJobs.has(jobId) ? "defensive takeover active" : 
-                        "manual job processing";
-          logger.info(`🏴‍☠️ COMPLETE_TAKEOVER: Updating job completion directly in MongoDB (${reason})`);
-          logger.info(`📊 MONGO_UPDATE: Setting job ${jobId} as complete with CID: ${gatewayResult.ipfs_hash}`);
+        // Try Gateway Aid completion for community nodes
+        if (usedGatewayAidFallback) {
+          logger.info(`� GATEWAY_AID_COMPLETE: Completing job via REST API...`);
           
           try {
-            await this.mongoVerifier.forceCompleteJob(jobId, { cid: gatewayResult.ipfs_hash });
-            logger.info(`✅ MONGO_SUCCESS: Job ${jobId} marked as complete in MongoDB`);
-            logger.info(`🎯 TOTAL_INDEPENDENCE: Gateway bypassed completely - job done!`);
-          } catch (mongoError) {
-            logger.error(`❌ MONGO_COMPLETION_FAILED: Could not update MongoDB:`, mongoError);
-            logger.warn(`🆘 Job was processed successfully, but MongoDB update failed`);
-            // Continue anyway - the work is done, just the record update failed
+            const completed = await this.gatewayAid.completeJob(jobId, result);
+            
+            if (completed) {
+              logger.info(`✅ GATEWAY_AID_SUCCESS: Job ${jobId} completed via REST API`);
+              finishResponse = { success: true, duplicate: false };
+            } else {
+              logger.error(`❌ GATEWAY_AID_FAILED: Could not complete job ${jobId} via REST API`);
+              logger.warn(`🆘 Job was processed successfully, but Gateway Aid completion failed`);
+              finishResponse = { success: false, duplicate: false };
+            }
+          } catch (aidError) {
+            logger.error(`❌ GATEWAY_AID_ERROR: Exception while completing job via REST:`, aidError);
+            logger.warn(`🆘 Job was processed successfully, but Gateway Aid update failed`);
+            finishResponse = { success: false, duplicate: false };
           }
         }
-        
-        logger.info(`📋 Job ${jobId} completed successfully with result: ${JSON.stringify(gatewayResult)}`);
-        finishResponse = { success: true, duplicate: false }; // Simulate successful response
+        // Use MongoDB completion for infrastructure nodes  
+        else {
+          // �🏴‍☠️ COMPLETE TAKEOVER: Update MongoDB directly when gateway is unreliable
+          // 🏴‍☠️ AGGRESSIVE TAKEOVER: Use MongoDB for completion in these cases:
+          // 1. Used MongoDB fallback during processing (usedMongoDBFallback)
+          // 2. Job was defensively taken over (this.defensiveTakeoverJobs.has)
+          // 3. Manual job processing (ownershipAlreadyConfirmed) - prefer MongoDB over unreliable gateway
+          const shouldUseMongoTakeover = (usedMongoDBFallback || 
+                                         this.defensiveTakeoverJobs.has(jobId) || 
+                                         ownershipAlreadyConfirmed) && 
+                                         this.mongoVerifier.isEnabled();
+          
+          if (shouldUseMongoTakeover) {
+            const reason = usedMongoDBFallback ? "MongoDB fallback used" : 
+                          this.defensiveTakeoverJobs.has(jobId) ? "defensive takeover active" : 
+                          "manual job processing";
+            logger.info(`🏴‍☠️ COMPLETE_TAKEOVER: Updating job completion directly in MongoDB (${reason})`);
+            logger.info(`📊 MONGO_UPDATE: Setting job ${jobId} as complete with CID: ${gatewayResult.ipfs_hash}`);
+            
+            try {
+              await this.mongoVerifier.forceCompleteJob(jobId, { cid: gatewayResult.ipfs_hash });
+              logger.info(`✅ MONGO_SUCCESS: Job ${jobId} marked as complete in MongoDB`);
+              logger.info(`🎯 TOTAL_INDEPENDENCE: Gateway bypassed completely - job done!`);
+            } catch (mongoError) {
+              logger.error(`❌ MONGO_COMPLETION_FAILED: Could not update MongoDB:`, mongoError);
+              logger.warn(`🆘 Job was processed successfully, but MongoDB update failed`);
+              // Continue anyway - the work is done, just the record update failed
+            }
+          }
+          
+          logger.info(`📋 Job ${jobId} completed successfully with result: ${JSON.stringify(gatewayResult)}`);
+          finishResponse = { success: true, duplicate: false }; // Simulate successful response
+        }
       }
       
       // 🚨 FIX: Always clear cached result to prevent memory leak
@@ -1458,8 +1529,8 @@ export class ThreeSpeakEncoder {
         skipJobSilently = true;
       }
       
-      // Only report failure if we confirmed we owned the job (and not offline/manual mode)
-      if (shouldReportFailure && !ownershipAlreadyConfirmed && !usedMongoDBFallback) {
+      // Only report failure if we confirmed we owned the job (and not offline/manual mode/fallback)
+      if (shouldReportFailure && !ownershipAlreadyConfirmed && !usedMongoDBFallback && !usedGatewayAidFallback) {
         try {
           await this.gateway.failJob(jobId, {
             error: errorMessage,
@@ -1476,10 +1547,22 @@ export class ThreeSpeakEncoder {
             logger.warn(`⚠️ Failed to report job failure to gateway for ${jobId}:`, reportError.message);
           }
         }
-      } else if (shouldReportFailure && (ownershipAlreadyConfirmed || usedMongoDBFallback)) {
-        const reason = ownershipAlreadyConfirmed ? "manual processing" : "MongoDB fallback mode";
-        logger.info(`🎯 OFFLINE_MODE: Job ${jobId} failed in ${reason} - not reporting to gateway`);
-        logger.error(`❌ OFFLINE_PROCESSING_FAILED: ${errorMessage}`);
+      } else if (shouldReportFailure && (ownershipAlreadyConfirmed || usedMongoDBFallback || usedGatewayAidFallback)) {
+        const reason = ownershipAlreadyConfirmed ? "manual processing" : 
+                       usedMongoDBFallback ? "MongoDB fallback mode" :
+                       "Gateway Aid fallback mode";
+        logger.info(`🎯 FALLBACK_MODE: Job ${jobId} failed in ${reason} - handling via fallback`);
+        logger.error(`❌ FALLBACK_PROCESSING_FAILED: ${errorMessage}`);
+        
+        // Report failure via Gateway Aid if applicable
+        if (usedGatewayAidFallback) {
+          try {
+            await this.gatewayAid.failJob(jobId, errorMessage);
+            logger.info(`📤 Reported job failure via Gateway Aid: ${jobId}`);
+          } catch (aidError) {
+            logger.warn(`⚠️ Failed to report job failure via Gateway Aid for ${jobId}:`, aidError);
+          }
+        }
         // Don't throw here - we still want to handle the original job failure with retry logic
       } else {
         logger.info(`✅ JOB_SKIP: Not reporting failure for ${jobId} - job assignment was uncertain`);

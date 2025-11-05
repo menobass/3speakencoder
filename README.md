@@ -66,6 +66,26 @@ Beautiful dashboard with:
 ✅ Reports completion
 ✅ Cleans up temporary files
 
+### 🎖️ **Want Even Higher Reliability?**
+
+**Apply for Approved Community Node Status!**
+
+Approved community nodes get access to **Gateway Aid** - a special REST API fallback that keeps your encoder running even when the main gateway has issues.
+
+**Benefits of Approval:**
+- 🛡️ **Gateway Aid Fallback**: REST API keeps you encoding during gateway outages
+- 📈 **Higher Uptime**: Continue processing jobs when websocket fails
+- 🏆 **Priority Status**: Recognition as a trusted community encoder
+- 💪 **Production Grade**: Same resilience as infrastructure nodes (but via API)
+
+**How to Apply:**
+1. Run your encoder reliably for a few weeks
+2. Contact 3Speak team with your encoder's DID
+3. Once approved, enable Gateway Aid in your config
+4. Enjoy automatic failover during gateway issues!
+
+**Note**: Gateway Aid requires DID approval from 3Speak team. Infrastructure nodes use direct MongoDB access instead.
+
 ---
 
 A modern, reliable replacement for the 3Speak video encoder with **dual-mode operation** supporting both 3Speak gateway jobs and direct API requests for miniservice integration.
@@ -243,6 +263,23 @@ MONGODB_VERIFICATION_ENABLED=false
 # DATABASE_NAME=spk-encoder-gateway
 # MONGODB_CONNECTION_TIMEOUT=10000
 # MONGODB_SOCKET_TIMEOUT=30000
+
+# =================================================================
+# GATEWAY AID FALLBACK (APPROVED COMMUNITY NODES ONLY)
+# =================================================================
+# Gateway Aid provides REST API fallback when websocket/gateway APIs fail
+# 
+# ⚠️  REQUIRES APPROVAL: Your DID key must be registered with 3Speak
+# ⚠️  Contact 3Speak team to request Gateway Aid access
+# 
+# This is NOT available by default - only for approved community encoders
+# Infrastructure nodes should use MongoDB fallback instead (MONGO_URI)
+#
+# When enabled, if gateway websocket or APIs fail, encoder will automatically
+# switch to REST API endpoints for job claiming, progress updates, and completion
+#
+GATEWAY_AID_ENABLED=false
+# GATEWAY_AID_BASE_URL=https://encoder-gateway.infra.3speak.tv/aid
 ```
 
 ### 🚀 Force Processing (3Speak Infrastructure Only)
@@ -474,34 +511,61 @@ DATABASE_NAME=spk-encoder-gateway
 # - Complete gateway independence during outages
 ```
 
-## 🛡️ Resilience Architecture (3Speak Infrastructure)
+#### Example 5: Approved Community Node (Gateway Aid Fallback)
+For approved community encoders with Gateway Aid access:
+
+```bash
+HIVE_USERNAME=community-encoder
+REMOTE_GATEWAY_ENABLED=true
+MAX_CONCURRENT_JOBS=2
+
+# ⚠️ CRITICAL: Required for persistent identity and DID authentication
+ENCODER_PRIVATE_KEY=your-generated-key-from-first-run
+
+# 🆘 Gateway Aid Fallback (Approved Community Nodes Only)
+GATEWAY_AID_ENABLED=true
+GATEWAY_AID_BASE_URL=https://encoder-gateway.infra.3speak.tv/aid
+
+# ✨ Benefits When Gateway Aid Enabled:
+# - REST API fallback when websocket fails
+# - Automatic job claiming via API during gateway issues
+# - Progress updates continue via REST endpoints
+# - Job completion works even when main gateway is down
+# - NO MongoDB access required (works purely via API)
+```
+
+## 🛡️ Resilience Architecture
+
+The encoder supports **two parallel fallback systems** depending on node type:
+
+### For Infrastructure Nodes (MongoDB Access)
 
 When MongoDB verification is enabled, the encoder operates with **5 layers of resilience**:
 
-### Layer 1: Normal Gateway Operation
+#### Layer 1: Normal Gateway Operation
 - Standard API calls to gateway
 - Job polling, acceptance, progress reporting
 - Normal completion workflow
 
-### Layer 2: MongoDB Verification
+#### Layer 2: MongoDB Verification
 - Activates when gateway returns errors
 - Verifies job ownership directly in database
 - Provides ground-truth about job state
 - Continues processing despite gateway issues
 
-### Layer 3: Defensive Takeover
+#### Layer 3: Defensive Takeover
 - Triggered when gateway APIs completely fail
 - Claims jobs directly via MongoDB
 - Skips all gateway communication for claimed jobs
 - Enables offline processing
 
-### Layer 4: Direct Completion
+#### Layer 4: Direct Completion
 - Updates job completion status directly in MongoDB
 - Bypasses failing gateway reporting APIs
 - Ensures videos process even when gateway is down
 - Results persist in database for gateway to sync later
 
-### Layer 5: Rescue Mode (Ultimate Failsafe)
+#### Layer 5: Rescue Mode (Ultimate Failsafe)
 - Auto-activates during prolonged gateway outages
 - Monitors abandoned jobs every 60 seconds
 - Auto-claims jobs stuck 5+ minutes in "queued" status
@@ -511,6 +575,54 @@ When MongoDB verification is enabled, the encoder operates with **5 layers of re
 **Result**: Encoder continues processing videos **completely autonomously** during gateway failures. When gateway recovers, it syncs from MongoDB truth.
 
 See `docs/RESCUE_MODE.md` for complete technical documentation.
+
+### For Approved Community Nodes (Gateway Aid)
+
+When Gateway Aid is enabled, the encoder operates with **parallel REST API fallback**:
+
+#### Layer 1: Normal Gateway Websocket
+- Standard websocket connection
+- Job polling, acceptance, progress reporting
+- Normal completion workflow
+
+#### Layer 2: Gateway Aid REST Fallback
+- Activates when gateway websocket or APIs fail
+- Uses authenticated REST API endpoints
+- Same DID authentication as websocket
+- Per-job fallback (each job decides independently)
+
+**Gateway Aid Endpoints:**
+- `POST /aid/claim-job` - Claim jobs when websocket fails
+- `POST /aid/update-job` - Send progress updates via REST
+- `POST /aid/complete-job` - Report completion via REST API
+- `GET /aid/list-jobs` - List available jobs (optional polling)
+
+**Workflow:**
+1. Try gateway websocket for job operations
+2. On any websocket/API failure → Switch to Gateway Aid for **that job only**
+3. Next job starts fresh (tries websocket first again)
+4. Automatic failover, no configuration needed
+
+**Benefits:**
+- 🚀 **No MongoDB Required**: Works purely via REST API
+- 🔐 **Secure**: DID authentication on all requests
+- ⚡ **Fast Failover**: Immediate switch on gateway errors
+- 🎯 **Per-Job Fallback**: Independent decision for each job
+- 🛡️ **Production Ready**: Same pattern as MongoDB fallback
+
+**Comparison:**
+
+| Feature | Infrastructure Nodes | Approved Community Nodes |
+|---------|---------------------|--------------------------|
+| **Fallback Method** | Direct MongoDB | Gateway Aid REST API |
+| **Requires** | MongoDB credentials | DID approval |
+| **Rescue Mode** | ✅ Yes (auto-claim abandoned) | ❌ No (no DB access) |
+| **Force Processing** | ✅ Yes (emergency bypass) | ❌ No (no DB access) |
+| **Fallback Trigger** | Gateway API failure | Gateway API failure |
+| **Job Completion** | Direct DB update | REST API call |
+| **Autonomy Level** | Complete (offline capable) | High (API dependent) |
+
+Both systems use the **same per-job fallback pattern** - they just use different mechanisms (MongoDB vs REST API) to achieve resilience.
 
 ## 🚀 Usage
 

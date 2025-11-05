@@ -329,6 +329,13 @@ DIRECT_API_ENABLED=false
 # MongoDB Direct Verification (DISABLED by default)
 # 🚨 Only enable for 3Speak infrastructure nodes with database access
 MONGODB_VERIFICATION_ENABLED=false
+# MONGODB_URI=mongodb://username:password@host:port/database
+# DATABASE_NAME=spk-encoder-gateway
+
+# Gateway Aid Fallback (DISABLED by default)
+# 🆘 Only for approved community nodes - contact 3Speak team
+GATEWAY_AID_ENABLED=false
+# GATEWAY_AID_BASE_URL=https://gateway-monitor.3speak.tv/aid/v1
 EOF
 
 elif [[ "$ENCODER_MODE" == "direct" ]]; then
@@ -373,6 +380,13 @@ DIRECT_API_KEY=$API_KEY
 # MongoDB Direct Verification (DISABLED by default)
 # 🚨 Only enable for 3Speak infrastructure nodes with database access
 MONGODB_VERIFICATION_ENABLED=false
+# MONGODB_URI=mongodb://username:password@host:port/database
+# DATABASE_NAME=spk-encoder-gateway
+
+# Gateway Aid Fallback (DISABLED by default)
+# 🆘 Only for approved community nodes - contact 3Speak team
+GATEWAY_AID_ENABLED=false
+# GATEWAY_AID_BASE_URL=https://gateway-monitor.3speak.tv/aid/v1
 EOF
 
 else
@@ -421,6 +435,13 @@ DIRECT_API_KEY=$API_KEY
 # MongoDB Direct Verification (DISABLED by default)
 # 🚨 Only enable for 3Speak infrastructure nodes with database access
 MONGODB_VERIFICATION_ENABLED=false
+# MONGODB_URI=mongodb://username:password@host:port/database
+# DATABASE_NAME=spk-encoder-gateway
+
+# Gateway Aid Fallback (DISABLED by default)
+# 🆘 Only for approved community nodes - contact 3Speak team
+GATEWAY_AID_ENABLED=false
+# GATEWAY_AID_BASE_URL=https://gateway-monitor.3speak.tv/aid/v1
 EOF
 
 fi

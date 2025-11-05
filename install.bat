@@ -181,6 +181,13 @@ if "%ENCODER_MODE%"=="gateway" (
     echo # MongoDB Direct Verification ^(DISABLED by default^)
     echo # 🚨 Only enable for 3Speak infrastructure nodes with database access
     echo MONGODB_VERIFICATION_ENABLED=false
+    echo # MONGODB_URI=mongodb://username:password@host:port/database
+    echo # DATABASE_NAME=spk-encoder-gateway
+    echo.
+    echo # Gateway Aid Fallback ^(DISABLED by default^)
+    echo # 🆘 Only for approved community nodes - contact 3Speak team
+    echo GATEWAY_AID_ENABLED=false
+    echo # GATEWAY_AID_BASE_URL=https://gateway-monitor.3speak.tv/aid/v1
     echo.
     echo # Logging
     echo LOG_LEVEL=info
@@ -207,6 +214,13 @@ if "%ENCODER_MODE%"=="gateway" (
     echo # MongoDB Direct Verification ^(DISABLED by default^)
     echo # 🚨 Only enable for 3Speak infrastructure nodes with database access
     echo MONGODB_VERIFICATION_ENABLED=false
+    echo # MONGODB_URI=mongodb://username:password@host:port/database
+    echo # DATABASE_NAME=spk-encoder-gateway
+    echo.
+    echo # Gateway Aid Fallback ^(DISABLED by default^)
+    echo # 🆘 Only for approved community nodes - contact 3Speak team
+    echo GATEWAY_AID_ENABLED=false
+    echo # GATEWAY_AID_BASE_URL=https://gateway-monitor.3speak.tv/aid/v1
     echo.
     echo # Logging
     echo LOG_LEVEL=info
@@ -233,6 +247,13 @@ if "%ENCODER_MODE%"=="gateway" (
     echo # MongoDB Direct Verification ^(DISABLED by default^)
     echo # 🚨 Only enable for 3Speak infrastructure nodes with database access
     echo MONGODB_VERIFICATION_ENABLED=false
+    echo # MONGODB_URI=mongodb://username:password@host:port/database
+    echo # DATABASE_NAME=spk-encoder-gateway
+    echo.
+    echo # Gateway Aid Fallback ^(DISABLED by default^)
+    echo # 🆘 Only for approved community nodes - contact 3Speak team
+    echo GATEWAY_AID_ENABLED=false
+    echo # GATEWAY_AID_BASE_URL=https://gateway-monitor.3speak.tv/aid/v1
     echo.
     echo # Logging
     echo LOG_LEVEL=info

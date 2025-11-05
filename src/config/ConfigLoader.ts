@@ -51,6 +51,10 @@ const ConfigSchema = z.object({
     database_name: z.string().optional(),
     connection_timeout: z.number().default(10000),
     socket_timeout: z.number().default(30000)
+  }).optional(),
+  gateway_aid: z.object({
+    enabled: z.boolean().default(false),
+    base_url: z.string().url().optional()
   }).optional()
 });
 
@@ -104,6 +108,10 @@ export async function loadConfig(): Promise<EncoderConfig> {
         database_name: process.env.DATABASE_NAME,
         connection_timeout: parseInt(process.env.MONGODB_CONNECTION_TIMEOUT || '10000'),
         socket_timeout: parseInt(process.env.MONGODB_SOCKET_TIMEOUT || '30000')
+      },
+      gateway_aid: {
+        enabled: process.env.GATEWAY_AID_ENABLED === 'true',
+        base_url: process.env.GATEWAY_AID_BASE_URL
       }
     };
     
@@ -156,6 +164,10 @@ export function getDefaultConfig(): Partial<EncoderConfig> {
         database_name: undefined,
         connection_timeout: 10000,
         socket_timeout: 30000
+      },
+      gateway_aid: {
+        enabled: false,
+        base_url: undefined
       }
     };
 }
