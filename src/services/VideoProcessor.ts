@@ -1265,7 +1265,17 @@ export class VideoProcessor {
     outputsDir: string,
     progressCallback: (progress: { percent?: number; fps?: number; speed?: number; bitrate?: number }) => void
   ): Promise<EncodedOutput> {
-    const outputFile = join(outputsDir, 'passthrough.m3u8');
+    const fs = await import('fs/promises');
+    
+    // Create proper directory structure like normal jobs
+    const qualityDir = join(outputsDir, '480p'); // Use 480p as default for ultra-compressed
+    await fs.mkdir(qualityDir, { recursive: true });
+    
+    const qualityPlaylist = join(qualityDir, 'index.m3u8');
+    const masterManifest = join(outputsDir, 'manifest.m3u8');
+    
+    // Calculate adaptive segment duration to prevent IPFS disasters
+    const segmentDuration = await this.calculateAdaptiveSegmentDuration(sourceFile);
     
     return new Promise((resolve, reject) => {
       const command = ffmpeg(sourceFile)
@@ -1274,10 +1284,10 @@ export class VideoProcessor {
         .addOption('-avoid_negative_ts', 'make_zero')
         .addOption('-copyts')
         .addOption('-f', 'hls')        // HLS output format
-        .addOption('-hls_time', '6')   // 6 second segments
+        .addOption('-hls_time', segmentDuration.toString()) // Adaptive segment duration
         .addOption('-hls_list_size', '0')  // Keep all segments in playlist
-        .addOption('-hls_segment_filename', join(outputsDir, 'passthrough_%03d.ts'))
-        .output(outputFile);
+        .addOption('-hls_segment_filename', join(qualityDir, '480p_%d.ts')) // Proper naming
+        .output(qualityPlaylist);
 
       let lastPercent = 0;
 
@@ -1304,21 +1314,24 @@ export class VideoProcessor {
           // Get stats of the original file for metadata
           const stats = await fs.stat(sourceFile);
           
-          // Collect generated HLS segments
-          const segmentFiles = await fs.readdir(outputsDir);
+          // Collect generated HLS segments from quality directory
+          const segmentFiles = await fs.readdir(qualityDir);
           const segments = segmentFiles
-            .filter(file => file.startsWith('passthrough_') && file.endsWith('.ts'))
-            .map(file => join(outputsDir, file));
+            .filter(file => file.startsWith('480p_') && file.endsWith('.ts'))
+            .map(file => join(qualityDir, file));
           
           logger.info(`✅ Passthrough HLS complete: ${segments.length} segments generated`);
           
+          // Generate master manifest that points to the single quality
+          await this.generateMasterManifest(masterManifest, '480p');
+          
           resolve({
-            profile: 'passthrough',
-            path: outputFile,
+            profile: '480p',
+            path: masterManifest,
             size: stats.size, // Use original file size as reference
             duration: 0, // Will be detected by player
             segments: segments,
-            playlist: outputFile
+            playlist: masterManifest
           });
         } catch (error) {
           reject(error);
@@ -1327,6 +1340,92 @@ export class VideoProcessor {
 
       command.run();
     });
+  }
+
+  /**
+   * 🛡️ IPFS PROTECTION: Calculate adaptive segment duration to prevent upload disasters
+   */
+  private async calculateAdaptiveSegmentDuration(sourceFile: string): Promise<number> {
+    try {
+      const ffprobe = await import('fluent-ffmpeg');
+      
+      return new Promise((resolve, reject) => {
+        ffprobe.default.ffprobe(sourceFile, (err, metadata) => {
+          if (err) {
+            logger.warn('⚠️ Could not probe for adaptive segments, using 6s default:', err);
+            resolve(6);
+            return;
+          }
+          
+          const duration = metadata.format.duration || 0;
+          const durationHours = duration / 3600;
+          
+          // 🛡️ ADAPTIVE SEGMENT PROTECTION: Prevent IPFS upload disasters
+          let segmentDuration: number;
+          let maxSegments: number;
+          let reasoning: string;
+          
+          if (durationHours <= 1) {
+            // Short videos: 6s segments (up to 600 segments for 1h)
+            segmentDuration = 6;
+            maxSegments = Math.ceil(duration / 6);
+            reasoning = 'short video (<1h)';
+          } else if (durationHours <= 4) {
+            // Medium videos: 15s segments (up to 960 segments for 4h)
+            segmentDuration = 15;
+            maxSegments = Math.ceil(duration / 15);
+            reasoning = 'medium video (1-4h)';
+          } else if (durationHours <= 12) {
+            // Long videos: 30s segments (up to 1440 segments for 12h)
+            segmentDuration = 30;
+            maxSegments = Math.ceil(duration / 30);
+            reasoning = 'long video (4-12h)';
+          } else {
+            // Ultra-long videos: 60s segments (max 1440 segments for 24h)
+            segmentDuration = 60;
+            maxSegments = Math.ceil(duration / 60);
+            reasoning = 'ultra-long video (>12h)';
+          }
+          
+          // 🚨 HARD LIMIT: Never exceed 2000 segments (IPFS upload limit)
+          const HARD_SEGMENT_LIMIT = 2000;
+          if (maxSegments > HARD_SEGMENT_LIMIT) {
+            segmentDuration = Math.ceil(duration / HARD_SEGMENT_LIMIT);
+            maxSegments = HARD_SEGMENT_LIMIT;
+            reasoning = `IPFS-limited (${segmentDuration}s segments to stay under ${HARD_SEGMENT_LIMIT} limit)`;
+          }
+          
+          logger.info(`🛡️ Adaptive segments for ${durationHours.toFixed(1)}h video: ${segmentDuration}s segments (≈${maxSegments} total) - ${reasoning}`);
+          
+          // 🚨 WARNING for extreme cases
+          if (maxSegments > 1500) {
+            logger.warn(`⚠️ HIGH SEGMENT COUNT: ${maxSegments} segments may stress IPFS uploads`);
+          }
+          
+          resolve(segmentDuration);
+        });
+      });
+    } catch (error) {
+      logger.warn('⚠️ Error calculating adaptive segments, using 6s default:', error);
+      return 6;
+    }
+  }
+
+  /**
+   * Generate master manifest that points to single quality folder
+   */
+  private async generateMasterManifest(manifestPath: string, quality: string): Promise<void> {
+    const fs = await import('fs/promises');
+    
+    // Create HLS master playlist that references the single quality
+    const masterContent = `#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=854x480,CODECS="avc1.42e01e,mp4a.40.2"
+${quality}/index.m3u8
+`;
+    
+    await fs.writeFile(manifestPath, masterContent);
+    logger.info(`✅ Generated master manifest: ${manifestPath}`);
   }
 
   private async encodeProfile(
@@ -1340,6 +1439,9 @@ export class VideoProcessor {
     await fs.mkdir(profileDir, { recursive: true });
     
     const outputPath = join(profileDir, 'index.m3u8');
+    
+    // 🛡️ Calculate adaptive segment duration for IPFS protection
+    const segmentDuration = await this.calculateAdaptiveSegmentDuration(sourceFile);
     
     // 🔄 CASCADING FALLBACK SYSTEM: Try codecs in order of preference
     // 1. Tested hardware codecs (highest priority)
@@ -1384,7 +1486,8 @@ export class VideoProcessor {
           codec,
           adaptiveTimeout,
           progressCallback,
-          strategy // Pass the encoding strategy
+          strategy, // Pass the encoding strategy
+          segmentDuration // Pass adaptive segment duration
         );
         
         logger.info(`✅ ${profile.name} encoding SUCCESS with ${codec.name}`);
@@ -1425,7 +1528,8 @@ export class VideoProcessor {
     codec: { name: string; type: string },
     timeoutMs: number,
     progressCallback?: (progress: number) => void,
-    strategy?: EncodingStrategy | null
+    strategy?: EncodingStrategy | null,
+    segmentDuration?: number
   ): Promise<EncodedOutput> {
     return new Promise((resolve, reject) => {
       // Get profile-specific settings matching Eddie's script
@@ -1522,7 +1626,7 @@ export class VideoProcessor {
         .addOption('-ac', '2')
         .addOption('-ar', '48000')
         .addOption('-video_track_timescale', '90000')
-        .addOption('-hls_time', '6')
+        .addOption('-hls_time', (segmentDuration || 6).toString())
         .addOption('-hls_playlist_type', 'vod')
         .addOption('-hls_list_size', '0')
         .addOption('-start_number', '0')
