@@ -555,6 +555,27 @@ export class VideoProcessor {
             });
           }
 
+          // 🚀 Issue: Ultra-compressed video (compressed to death!)
+          const fileSizeBytes = metadata.format?.size || 0;
+          const durationSeconds = metadata.format?.duration || 1;
+          const bitsPerSecond = (fileSizeBytes * 8) / durationSeconds;
+          const pixelsPerSecond = width * height * framerate;
+          const bitsPerPixel = pixelsPerSecond > 0 ? bitsPerSecond / pixelsPerSecond : 0;
+          
+          // Detection: ultra-low bitrate OR very small file for duration
+          const isUltraCompressed = bitsPerPixel < 0.1 || // <0.1 bits per pixel (extremely compressed)
+                                   bitsPerSecond < 500000 || // <500kbps total bitrate
+                                   (fileSizeBytes < 500 * 1024 * 1024 && durationSeconds > 1800); // <500MB for >30min video
+          
+          if (isUltraCompressed) {
+            issues.push({
+              severity: 'info',
+              type: 'ultra_compressed',
+              message: `Video is ultra-compressed: ${(bitsPerSecond/1000).toFixed(0)}kbps, ${bitsPerPixel.toFixed(3)} bits/pixel`,
+              suggestion: 'Will use passthrough mode - just segment for HLS without re-encoding to avoid quality loss'
+            });
+          }
+
           const result: FileProbeResult = {
             container,
             videoCodec,
@@ -703,6 +724,26 @@ export class VideoProcessor {
 
     const reasons: string[] = [];
 
+    // 0. PRIORITY: Ultra-compressed content - use pure passthrough to avoid quality loss
+    const ultraCompressedIssue = probe.issues.find(issue => issue.type === 'ultra_compressed');
+    if (ultraCompressedIssue) {
+      // Pure passthrough mode - no re-encoding, just segment for HLS
+      strategy.codecPriority = ['copy']; // Use copy codec to avoid re-encoding
+      strategy.extraOptions.push(
+        '-c:v', 'copy',     // Copy video without re-encoding
+        '-c:a', 'copy',     // Copy audio without re-encoding
+        '-avoid_negative_ts', 'make_zero',  // Fix timestamp issues
+        '-copyts'           // Preserve original timestamps
+      );
+      
+      // Single quality output since we're not re-encoding
+      strategy.reason = `passthrough mode for ultra-compressed content (${ultraCompressedIssue.suggestion})`;
+      
+      logger.info(`🔄 Using passthrough encoding for ultra-compressed video: ${ultraCompressedIssue.suggestion}`);
+      
+      return strategy; // Early return - skip all other processing
+    }
+
     // 1. Handle extra metadata streams (iPhone .mov files)
     if (probe.extraStreams.length > 0) {
       strategy.mapOptions.push('-map', '0:v:0', '-map', '0:a:0');
@@ -843,13 +884,40 @@ export class VideoProcessor {
         // Continue with standard encoding if probe fails
       }
       
-      // Process each quality profile
+      // Process each quality profile OR use passthrough mode
       const outputs: EncodedOutput[] = [];
-      const profiles = [
-        { name: '1080p', height: 1080 },
-        { name: '720p', height: 720 },
-        { name: '480p', height: 480 }
-      ];
+      
+      // Check if we should use passthrough mode for ultra-compressed content
+      const isPassthrough = encodingStrategy?.codecPriority.includes('copy') || false;
+      
+      if (isPassthrough) {
+        // Passthrough mode: Single HLS output with copy codecs
+        logger.info(`🔄 Processing with passthrough mode (no re-encoding)`);
+        
+        const passthroughOutput = await this.createPassthroughHLS(
+          sourceFile,
+          outputsDir,
+          (progress) => {
+            if (progressCallback) {
+              progressCallback({
+                jobId,
+                profile: 'passthrough',
+                percent: progress.percent || 0,
+                fps: progress.fps || 0,
+                bitrate: `${progress.bitrate || 0}kbps`
+              });
+            }
+          }
+        );
+        
+        outputs.push(passthroughOutput);
+      } else {
+        // Standard multi-quality encoding
+        const profiles = [
+          { name: '1080p', height: 1080 },
+          { name: '720p', height: 720 },
+          { name: '480p', height: 480 }
+        ];
 
       for (let i = 0; i < profiles.length; i++) {
         const profile = profiles[i]!;
@@ -876,6 +944,7 @@ export class VideoProcessor {
       }
       
       logger.info(`🎉 All profiles completed for job ${jobId}`);
+      } // End of else block for standard encoding
       
       // 🗑️ Delete source file immediately after encoding (no longer needed)
       try {
@@ -1188,6 +1257,75 @@ export class VideoProcessor {
         cleanup();
         reject(new Error('Download stream was aborted'));
       });
+    });
+  }
+
+  private async createPassthroughHLS(
+    sourceFile: string,
+    outputsDir: string,
+    progressCallback: (progress: { percent?: number; fps?: number; speed?: number; bitrate?: number }) => void
+  ): Promise<EncodedOutput> {
+    const outputFile = join(outputsDir, 'passthrough.m3u8');
+    
+    return new Promise((resolve, reject) => {
+      const command = ffmpeg(sourceFile)
+        .addOption('-c:v', 'copy')     // Copy video without re-encoding
+        .addOption('-c:a', 'copy')     // Copy audio without re-encoding
+        .addOption('-avoid_negative_ts', 'make_zero')
+        .addOption('-copyts')
+        .addOption('-f', 'hls')        // HLS output format
+        .addOption('-hls_time', '6')   // 6 second segments
+        .addOption('-hls_list_size', '0')  // Keep all segments in playlist
+        .addOption('-hls_segment_filename', join(outputsDir, 'passthrough_%03d.ts'))
+        .output(outputFile);
+
+      let lastPercent = 0;
+
+      command.on('progress', (progress) => {
+        const percent = Math.min(100, Math.max(0, progress.percent || 0));
+        if (percent > lastPercent) {
+          lastPercent = percent;
+          progressCallback({
+            percent,
+            fps: progress.currentFps || 0,
+            speed: parseFloat(String(progress.currentKbps || 0)) / 1000,
+            bitrate: parseFloat(String(progress.currentKbps || 0))
+          });
+        }
+      });
+
+      command.on('error', (error) => {
+        logger.error('❌ Passthrough HLS encoding failed:', error);
+        reject(error);
+      });
+
+      command.on('end', async () => {
+        try {
+          // Get stats of the original file for metadata
+          const stats = await fs.stat(sourceFile);
+          
+          // Collect generated HLS segments
+          const segmentFiles = await fs.readdir(outputsDir);
+          const segments = segmentFiles
+            .filter(file => file.startsWith('passthrough_') && file.endsWith('.ts'))
+            .map(file => join(outputsDir, file));
+          
+          logger.info(`✅ Passthrough HLS complete: ${segments.length} segments generated`);
+          
+          resolve({
+            profile: 'passthrough',
+            path: outputFile,
+            size: stats.size, // Use original file size as reference
+            duration: 0, // Will be detected by player
+            segments: segments,
+            playlist: outputFile
+          });
+        } catch (error) {
+          reject(error);
+        }
+      });
+
+      command.run();
     });
   }
 
