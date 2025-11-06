@@ -497,6 +497,64 @@ export class VideoProcessor {
             });
           }
 
+          // Issue: Ultra-low framerate (problematic for encoding)
+          if (framerate < 15 && framerate > 0) {
+            issues.push({
+              severity: 'warning',
+              type: 'low_framerate',
+              message: `Very low framerate detected: ${framerate}fps`,
+              suggestion: 'May cause slow encoding and player compatibility issues'
+            });
+          }
+
+          // Issue: Extreme video duration (>2 hours)
+          const durationHours = (metadata.format?.duration || 0) / 3600;
+          if (durationHours > 2) {
+            issues.push({
+              severity: 'error',
+              type: 'extreme_duration',
+              message: `Extremely long video: ${durationHours.toFixed(1)} hours`,
+              suggestion: 'Encoding will take very long time, consider splitting or increasing timeouts'
+            });
+          }
+
+          // Issue: Tiny resolution (unusual/problematic)
+          const width = videoStream?.width || 1920;
+          const height = videoStream?.height || 1080;
+          if (width < 480 || height < 360) {
+            issues.push({
+              severity: 'warning',
+              type: 'tiny_resolution',
+              message: `Very small resolution: ${width}x${height}`,
+              suggestion: 'May cause upscaling artifacts when creating higher quality outputs'
+            });
+          }
+
+          // Issue: Massive frame count (processing intensive)
+          const frameCount = parseInt(videoStream?.nb_frames || '0');
+          if (frameCount > 50000) {
+            issues.push({
+              severity: 'error',
+              type: 'massive_frame_count',
+              message: `Extremely high frame count: ${frameCount.toLocaleString()} frames`,
+              suggestion: 'Will require extended processing time and may timeout'
+            });
+          }
+
+          // Issue: Non-standard aspect ratio
+          const aspectRatio = width / height;
+          const isStandardAspect = Math.abs(aspectRatio - 16/9) < 0.1 || 
+                                   Math.abs(aspectRatio - 4/3) < 0.1 || 
+                                   Math.abs(aspectRatio - 1) < 0.1;
+          if (!isStandardAspect) {
+            issues.push({
+              severity: 'info',
+              type: 'unusual_aspect_ratio',
+              message: `Non-standard aspect ratio: ${aspectRatio.toFixed(2)}:1 (${width}x${height})`,
+              suggestion: 'May require letterboxing or pillarboxing for standard outputs'
+            });
+          }
+
           const result: FileProbeResult = {
             container,
             videoCodec,
@@ -579,6 +637,57 @@ export class VideoProcessor {
   }
 
   /**
+   * 🚨 Calculate adaptive timeout based on video characteristics and codec type
+   * Returns timeout in milliseconds
+   */
+  private calculateAdaptiveTimeout(sourceFile: string, codec: any, strategy?: EncodingStrategy | null): number {
+    // Base timeouts
+    const isHardware = codec.type === 'hardware';
+    const baseTimeout = isHardware ? 60000 : 1800000; // 1 min hardware, 30 min software
+    
+    // Get video duration from the source file if possible
+    // For now, we'll use the strategy reason to detect extreme cases
+    const strategyReason = strategy?.reason || '';
+    
+    // Multipliers for extreme cases
+    let timeoutMultiplier = 1;
+    
+    // Ultra-long videos (2+ hours)
+    if (strategyReason.includes('extreme duration')) {
+      timeoutMultiplier = Math.max(timeoutMultiplier, 3); // 3x timeout
+      logger.info(`🚨 Extreme duration detected - using 3x timeout multiplier`);
+    }
+    
+    // Massive frame count
+    if (strategyReason.includes('massive frame count')) {
+      timeoutMultiplier = Math.max(timeoutMultiplier, 4); // 4x timeout
+      logger.info(`🚨 Massive frame count detected - using 4x timeout multiplier`);
+    }
+    
+    // Low framerate (needs frame duplication)
+    if (strategyReason.includes('normalize') && strategyReason.includes('fps')) {
+      timeoutMultiplier = Math.max(timeoutMultiplier, 2); // 2x timeout
+      logger.info(`🚨 Low framerate normalization - using 2x timeout multiplier`);
+    }
+    
+    // Hardware acceleration might be faster for extreme cases
+    if (timeoutMultiplier > 2 && isHardware) {
+      timeoutMultiplier *= 0.7; // 30% reduction for hardware on extreme cases
+      logger.info(`⚡ Hardware acceleration - reducing timeout by 30% for extreme case`);
+    }
+    
+    const finalTimeout = Math.floor(baseTimeout * timeoutMultiplier);
+    const maxTimeout = 7200000; // 2 hours absolute maximum
+    const clampedTimeout = Math.min(finalTimeout, maxTimeout);
+    
+    if (clampedTimeout !== baseTimeout) {
+      logger.info(`⏱️ Adaptive timeout: ${(clampedTimeout/1000/60).toFixed(1)} minutes (base: ${(baseTimeout/1000/60).toFixed(1)}m, multiplier: ${timeoutMultiplier.toFixed(1)}x)`);
+    }
+    
+    return clampedTimeout;
+  }
+
+  /**
    * 🎯 Determine encoding strategy based on probe results
    * Returns optimized ffmpeg options for the detected file format
    */
@@ -647,6 +756,48 @@ export class VideoProcessor {
     if (probe.framerate > 60) {
       // FPS filter already applied in encoding, just note it
       reasons.push(`normalize ${probe.framerate}fps to 30fps`);
+    }
+
+    // 6. 🚨 EXTREME CASE HANDLING: Ultra-long videos
+    const durationHours = probe.duration / 3600;
+    if (durationHours > 2) {
+      // Use faster encoding preset for extreme duration videos
+      strategy.extraOptions.push('-preset', 'superfast');
+      strategy.extraOptions.push('-crf', '28'); // Higher CRF for faster encoding
+      reasons.push(`extreme duration (${durationHours.toFixed(1)}h) - use fast preset`);
+    }
+
+    // 7. 🚨 MASSIVE FRAME COUNT: Optimize for processing speed
+    const hasIssue = probe.issues.find(i => i.type === 'massive_frame_count');
+    if (hasIssue) {
+      // Enable multi-threading and fast encoding options
+      strategy.extraOptions.push('-threads', '0'); // Use all available CPU cores
+      strategy.extraOptions.push('-preset', 'ultrafast'); // Fastest encoding preset
+      strategy.extraOptions.push('-tune', 'fastdecode'); // Optimize for fast decoding
+      reasons.push('massive frame count - optimize for speed');
+    }
+
+    // 8. 🚨 LOW FRAMERATE HANDLING: Duplicate frames to normalize
+    if (probe.framerate < 15 && probe.framerate > 0) {
+      // Use fps filter to normalize low framerates to 15fps minimum
+      strategy.videoFilters.push(`fps=fps=15`);
+      reasons.push(`normalize ${probe.framerate}fps to 15fps minimum`);
+    }
+
+    // 9. 🚨 TINY RESOLUTION: Prevent extreme upscaling issues
+    if (probe.resolution.width < 480 || probe.resolution.height < 360) {
+      // Add scaling strategy to handle tiny resolutions better
+      strategy.extraOptions.push('-sws_flags', 'lanczos'); // Better upscaling algorithm
+      reasons.push(`tiny resolution ${probe.resolution.width}x${probe.resolution.height} - use better upscaling`);
+    }
+
+    // 10. 🚨 CYRILLIC/UNICODE METADATA: Handle encoding issues
+    const hasUnicodeMetadata = probe.rawMetadata?.format?.tags?.title && 
+      /[^\x00-\x7F]/.test(probe.rawMetadata.format.tags.title);
+    if (hasUnicodeMetadata) {
+      // Strip problematic metadata that might cause encoding failures
+      strategy.extraOptions.push('-map_metadata', '-1');
+      reasons.push('unicode metadata detected - strip to prevent encoding issues');
     }
 
     strategy.reason = reasons.length > 0 ? reasons.join(', ') : 'standard processing';
@@ -1084,13 +1235,16 @@ export class VideoProcessor {
         logger.info(`🎯 Attempting ${profile.name} encoding with ${codec.name} (${codec.type})`);
         logger.info(`   📍 Fallback position ${i + 1}/${fallbackChain.length}`);
         
+        // 🚨 ADAPTIVE TIMEOUT: Calculate timeout based on video characteristics
+        const adaptiveTimeout = this.calculateAdaptiveTimeout(sourceFile, codec, strategy);
+        
         const result = await this.attemptEncode(
           sourceFile,
           profile,
           profileDir,
           outputPath,
           codec,
-          isHardware ? 60000 : 1800000, // 1 min for hardware, 30 min for software
+          adaptiveTimeout,
           progressCallback,
           strategy // Pass the encoding strategy
         );
