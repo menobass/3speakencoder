@@ -1291,17 +1291,39 @@ export class IPFSService {
    */
   private async verifyLocalPinStatus(hash: string): Promise<boolean> {
     try {
-      const pins = this.client.pin.ls({ paths: [hash] });
+      logger.info(`🔍 Checking local IPFS daemon for pin: ${hash}`);
       
-      for await (const pin of pins) {
-        if (pin.cid.toString() === hash) {
-          logger.info(`✅ Local pin verification succeeded for ${hash}`);
-          return true;
+      // 🚨 BULLETPROOF: Try to list pins for this specific hash
+      // If hash is pinned, iterator will yield results
+      // If hash is NOT pinned, iterator will throw or yield nothing
+      let foundPin = false;
+      
+      try {
+        const pins = this.client.pin.ls({ paths: [hash] });
+        
+        for await (const pin of pins) {
+          const pinCid = pin.cid.toString();
+          logger.info(`🔍 Found local pin: ${pinCid} (type: ${pin.type})`);
+          
+          if (pinCid === hash) {
+            logger.info(`✅ Local pin verification succeeded for ${hash}`);
+            foundPin = true;
+            break;
+          }
         }
+      } catch (iteratorError: any) {
+        // 🚨 IPFS client throws error when path doesn't exist or isn't pinned
+        // This is NORMAL behavior - not an error, just means "not pinned"
+        logger.info(`🔍 Pin query returned no results for ${hash} (${iteratorError.message})`);
+        return false;
       }
       
-      logger.warn(`⚠️ Local pin verification failed - ${hash} not found in local pins`);
-      return false;
+      if (!foundPin) {
+        logger.warn(`⚠️ Local pin verification failed - ${hash} not found in local pins`);
+        return false;
+      }
+      
+      return true;
       
     } catch (error: any) {
       logger.error(`❌ Local pin verification error for ${hash}:`, error.message);
