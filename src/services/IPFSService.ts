@@ -438,13 +438,37 @@ export class IPFSService {
         logger.error(`❌ Supernode upload failed:`, error.message);
         logger.warn(`🚨 THE SHOW MUST GO ON: Supernode failed, will use local IPFS fallback`);
         
-        // No retries - if supernode fails, throw immediately to trigger fallback
+        // No retries - if supernode fails, break immediately to trigger fallback
         break;
       }
     }
     
-    logger.error('❌ Supernode upload failed - local fallback will handle this');
-    throw lastError;
+    // 🚨 ACTUAL LOCAL FALLBACK: Upload to local IPFS instead of throwing
+    logger.error('❌ Supernode upload failed - executing local IPFS fallback NOW');
+    logger.info(`🏠 LOCAL FALLBACK: Uploading ${dirPath} to local IPFS daemon...`);
+    
+    try {
+      // Upload to local IPFS daemon
+      const result = await this.uploadDirectoryToLocalIPFS(dirPath);
+      
+      logger.info(`✅ LOCAL FALLBACK SUCCESS: ${result}`);
+      logger.info(`📝 Logging local pin for future sync to supernode`);
+      
+      // Log this for lazy sync service
+      await this.logLocalPin(result);
+      
+      // Handle pinning callback if requested
+      if (pin && onPinFailed) {
+        onPinFailed(result, new Error('local_fallback_pin'));
+      }
+      
+      return result;
+      
+    } catch (localError: any) {
+      logger.error(`❌ LOCAL FALLBACK ALSO FAILED:`, localError.message);
+      logger.error(`🚨 CRITICAL: Both supernode and local IPFS failed - job cannot complete`);
+      throw new Error(`Both supernode and local IPFS failed. Supernode: ${lastError.message}, Local: ${localError.message}`);
+    }
   }
   
   private async performDirectoryUpload(dirPath: string): Promise<string> {
@@ -708,6 +732,65 @@ export class IPFSService {
       // 🚨 CRITICAL: Clean up all file streams on error to prevent memory leak
       cleanupAllStreams();
       logger.error('❌ UnixFS directory upload failed:', error.message);
+      throw error;
+    }
+  }
+  
+  /**
+   * 🏠 LOCAL FALLBACK: Upload directory to local IPFS daemon when supernode fails
+   */
+  private async uploadDirectoryToLocalIPFS(dirPath: string): Promise<string> {
+    logger.info(`🏠 Uploading directory to local IPFS daemon: ${dirPath}`);
+    
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const { globSource } = await import('ipfs-http-client');
+    
+    try {
+      // Get all files for progress tracking
+      const files = await this.getAllFiles(dirPath);
+      let totalSize = 0;
+      for (const filePath of files) {
+        const stats = await fs.stat(filePath);
+        totalSize += stats.size;
+      }
+      
+      logger.info(`📦 Local upload: ${(totalSize / 1024 / 1024).toFixed(1)}MB in ${files.length} files`);
+      
+      const startTime = Date.now();
+      let directoryHash = '';
+      
+      // Add directory with all contents using globSource
+      const addOptions = {
+        wrapWithDirectory: true,
+        pin: true // Pin locally
+      };
+      
+      logger.info(`🔄 Adding files to local IPFS...`);
+      
+      for await (const result of this.client.addAll(globSource(dirPath, '**/*'), addOptions)) {
+        if (!result.path || result.path === '') {
+          // This is the root directory hash
+          directoryHash = result.cid.toString();
+          logger.info(`🎯 Local IPFS directory hash: ${directoryHash}`);
+        }
+      }
+      
+      if (!directoryHash) {
+        throw new Error('Failed to get directory hash from local IPFS');
+      }
+      
+      const duration = Date.now() - startTime;
+      const speedMbps = (totalSize * 8) / (1024 * 1024) / (duration / 1000);
+      
+      logger.info(`✅ Local IPFS upload complete: ${directoryHash}`);
+      logger.info(`📊 Local upload: ${(totalSize/1024/1024).toFixed(1)}MB in ${(duration/1000).toFixed(1)}s (${speedMbps.toFixed(1)} Mbps)`);
+      logger.info(`📝 Content pinned locally and ready for lazy sync to supernode`);
+      
+      return directoryHash;
+      
+    } catch (error: any) {
+      logger.error(`❌ Local IPFS upload failed:`, error.message);
       throw error;
     }
   }
