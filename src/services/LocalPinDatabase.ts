@@ -130,6 +130,22 @@ export class LocalPinDatabase {
     }
   }
 
+  async getPin(hash: string): Promise<LocalPin | null> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const pin = await this.db.get(`
+        SELECT * FROM local_pins 
+        WHERE hash = ?
+      `, [hash]);
+
+      return pin || null;
+    } catch (error) {
+      logger.error(`❌ Failed to get pin ${hash}:`, error);
+      throw error;
+    }
+  }
+
   async updateSyncStatus(hash: string, status: LocalPin['sync_status'], error?: string): Promise<void> {
     if (!this.db) throw new Error('Database not initialized');
 

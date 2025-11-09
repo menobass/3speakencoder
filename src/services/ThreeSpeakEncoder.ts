@@ -1299,15 +1299,39 @@ export class ThreeSpeakEncoder {
           // 1. Used MongoDB fallback during processing (usedMongoDBFallback)
           // 2. Job was defensively taken over (this.defensiveTakeoverJobs.has)
           // 3. Manual job processing (ownershipAlreadyConfirmed) - prefer MongoDB over unreliable gateway
+          // 4. 🏠 LOCAL IPFS FALLBACK: Used local IPFS instead of supernode (check pin database)
+          let usedLocalFallback = false;
+          
+          // 🏠 Check if this CID is in local pins database (indicates local fallback was used)
+          if (this.mongoVerifier.isEnabled()) {
+            try {
+              const LocalPinDatabase = (await import('./LocalPinDatabase.js')).LocalPinDatabase;
+              const pinDb = new LocalPinDatabase();
+              await pinDb.initialize();
+              
+              const localPin = await pinDb.getPin(gatewayResult.ipfs_hash);
+              if (localPin) {
+                usedLocalFallback = true;
+                logger.info(`🏠 LOCAL_FALLBACK_DETECTED: CID ${gatewayResult.ipfs_hash} is in local pins database`);
+                logger.info(`📊 Local pin created: ${localPin.created_at}, status: ${localPin.sync_status}`);
+              }
+            } catch (pinCheckError) {
+              logger.warn(`⚠️ Could not check local pins database:`, pinCheckError);
+              // Continue - this is just an optimization check
+            }
+          }
+          
           const shouldUseMongoTakeover = (usedMongoDBFallback || 
                                          this.defensiveTakeoverJobs.has(jobId) || 
-                                         ownershipAlreadyConfirmed) && 
+                                         ownershipAlreadyConfirmed ||
+                                         usedLocalFallback) && 
                                          this.mongoVerifier.isEnabled();
           
           if (shouldUseMongoTakeover) {
             const reason = usedMongoDBFallback ? "MongoDB fallback used" : 
                           this.defensiveTakeoverJobs.has(jobId) ? "defensive takeover active" : 
-                          "manual job processing";
+                          ownershipAlreadyConfirmed ? "manual job processing" :
+                          "local IPFS fallback used";
             logger.info(`🏴‍☠️ COMPLETE_TAKEOVER: Updating job completion directly in MongoDB (${reason})`);
             logger.info(`📊 MONGO_UPDATE: Setting job ${jobId} as complete with CID: ${gatewayResult.ipfs_hash}`);
             
