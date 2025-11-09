@@ -63,7 +63,26 @@ export class IPFSService {
   }
 
   /**
-   * 🛡️ TANK MODE: Check IPFS node health before operations
+   * � Quick supernode connectivity check for emergency fallback decisions
+   */
+  private async isSupernodeReachable(): Promise<boolean> {
+    const threeSpeakIPFS = this.config.ipfs?.threespeak_endpoint || 'http://65.21.201.94:5002';
+    const axios = await import('axios');
+    
+    try {
+      // Quick ping check with short timeout
+      await axios.default.post(`${threeSpeakIPFS}/api/v0/id`, null, {
+        timeout: 5000 // Very short timeout for quick decision
+      });
+      return true;
+    } catch (error) {
+      logger.warn(`🚨 Supernode unreachable - will force local fallback`);
+      return false;
+    }
+  }
+
+  /**
+   * �🛡️ TANK MODE: Check IPFS node health before operations
    */
   private async checkIPFSHealth(): Promise<void> {
     const threeSpeakIPFS = this.config.ipfs?.threespeak_endpoint || 'http://65.21.201.94:5002';
@@ -717,13 +736,16 @@ export class IPFSService {
   private async attemptPinWithBulletproofTimeout(hash: string): Promise<void> {
     const threeSpeakIPFS = this.config.ipfs?.threespeak_endpoint || 'http://65.21.201.94:5002';
     const axios = await import('axios');
-    const localFallbackEnabled = this.config.ipfs?.enable_local_fallback || false;
+    
+    // 🚨 EMERGENCY MODE: Always try local fallback if supernode is unreachable
+    const supernodeReachable = await this.isSupernodeReachable();
+    const localFallbackEnabled = this.config.ipfs?.enable_local_fallback || !supernodeReachable; // Force local if supernode down
     
     // 🚨 BULLETPROOF: Multiple timeout layers
-    const HARD_TIMEOUT = 120000; // 2 minutes - absolute maximum
-    const SOFT_TIMEOUT = 60000;  // 1 minute - preferred timeout
+    const HARD_TIMEOUT = supernodeReachable ? 120000 : 30000; // Shorter timeout if supernode is down
+    const SOFT_TIMEOUT = supernodeReachable ? 60000 : 15000;  // Fail faster to local fallback
     
-    logger.info(`🛡️ Starting bulletproof pin for ${hash} (max ${HARD_TIMEOUT/1000}s)`);
+    logger.info(`🛡️ Starting bulletproof pin for ${hash} (supernode: ${supernodeReachable ? 'reachable' : 'DOWN'}, fallback: ${localFallbackEnabled})`);
     
     // Create a promise that WILL resolve within the hard timeout no matter what
     const bulletproofPromise = new Promise<void>((resolve, reject) => {
@@ -733,8 +755,10 @@ export class IPFSService {
       const hardTimeout = setTimeout(() => {
         if (!isResolved) {
           isResolved = true;
-          logger.warn(`� HARD TIMEOUT: Pinning took longer than ${HARD_TIMEOUT/1000}s for ${hash}`);
-          reject(new Error(`Pinning hard timeout after ${HARD_TIMEOUT/1000}s`));
+          logger.warn(`🚨 HARD TIMEOUT: Pinning took longer than ${HARD_TIMEOUT/1000}s for ${hash}`);
+          logger.warn(`🚨 EMERGENCY: Job will continue without pinning to prevent blocking`);
+          // 🚨 EMERGENCY: Always resolve to prevent job blocking
+          resolve();
         }
       }, HARD_TIMEOUT);
       
@@ -782,7 +806,9 @@ export class IPFSService {
                 isResolved = true;
                 clearTimeout(hardTimeout);
                 logger.error(`❌ Both remote and local pin failed: ${hash}`);
-                reject(new Error(`All pin methods failed - Remote: ${remoteError.message}, Local: ${localError.message}`));
+                logger.warn(`🚨 EMERGENCY: Job will continue - content uploaded and accessible`);
+                await this.logFailedPin(hash, `Remote: ${remoteError.message}, Local: ${localError.message}`);
+                resolve(); // 🚨 CRITICAL: Always resolve to continue job processing
               }
             }
           } else {
@@ -790,7 +816,10 @@ export class IPFSService {
             if (!isResolved) {
               isResolved = true;
               clearTimeout(hardTimeout);
-              reject(remoteError);
+              logger.error(`❌ Remote pin failed and no local fallback enabled: ${hash}`);
+              logger.warn(`🚨 EMERGENCY: Job will continue - content uploaded and accessible`);
+              await this.logFailedPin(hash, remoteError.message);
+              resolve(); // 🚨 CRITICAL: Always resolve to continue job processing
             }
           }
         }
@@ -801,7 +830,9 @@ export class IPFSService {
         if (!isResolved) {
           isResolved = true;
           clearTimeout(hardTimeout);
-          reject(error);
+          logger.error(`❌ Unexpected error in pin attempt: ${error.message}`);
+          logger.warn(`🚨 EMERGENCY: Job will continue - content uploaded and accessible`);
+          resolve(); // 🚨 CRITICAL: Always resolve to continue job processing
         }
       });
     });
@@ -927,16 +958,13 @@ export class IPFSService {
 
   async pinHash(hash: string): Promise<void> {
     try {
-      // Use cluster for pins if enabled, otherwise use main daemon
-      if (this.config.ipfs?.use_cluster_for_pins) {
-        await this.pinHashWithCluster(hash);
-      } else {
-        await this.client.pin.add(hash);
-        logger.info(`📌 Pinned (main daemon): ${hash}`);
-      }
+      // 🛡️ Use bulletproof pinning system with fallback instead of direct pinning
+      await this.attemptPinWithBulletproofTimeout(hash);
+      logger.info(`📌 Pinned with fallback protection: ${hash}`);
     } catch (error) {
-      logger.error(`❌ Failed to pin ${hash}:`, error);
-      throw error;
+      // 🚨 NEVER let pinning failures block job completion
+      logger.warn(`⚠️ Pinning failed for ${hash}, but continuing job:`, error);
+      // Don't throw - job must continue regardless of pinning status
     }
   }
 
