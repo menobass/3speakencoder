@@ -497,16 +497,26 @@ export class IPFSService {
     logger.info(`📦 Total directory size: ${(totalSize / 1024 / 1024).toFixed(1)}MB in ${files.length} files`);
     
     // Calculate timeout based on total size with reasonable limits
-    // 🚨 ULTRA AGGRESSIVE: ONE SHOT, quick timeout, then move to local fallback
-    const baseTimeout = 15000;  // 15 seconds base - no patience for slow supernode
-    const perMBTimeout = 1000;  // 1 second per MB - if it's slow, fuck it
-    const responseTimeout = 15000; // 15s for IPFS response - either works or doesn't
-    const maxTimeout = 30000;  // 30 SECONDS MAXIMUM - show must go on!
-    
-    const calculatedTimeout = baseTimeout + Math.floor(totalSize / (1024 * 1024)) * perMBTimeout + responseTimeout;
-    const timeoutMs = Math.min(calculatedTimeout, maxTimeout);
-    
-    logger.info(`⏱️ Directory upload timeout: ${Math.floor(timeoutMs / 1000)}s (size: ${(totalSize/1024/1024).toFixed(1)}MB, MAX: ${maxTimeout/1000}s - one shot then local fallback)`);
+      // 🚨 TWO-PHASE TIMEOUT: Upload timeout + IPFS processing timeout
+      // Phase 1: Upload timeout (aggressive - if slow, fuck it)
+      const uploadBaseTimeout = 15000;  // 15 seconds base
+      const uploadPerMBTimeout = 1000;  // 1 second per MB
+      const uploadMaxTimeout = 30000;   // 30s max for upload
+      
+      const uploadTimeout = Math.min(
+        uploadBaseTimeout + Math.floor(totalSize / (1024 * 1024)) * uploadPerMBTimeout,
+        uploadMaxTimeout
+      );
+      
+      // Phase 2: IPFS processing timeout (generous - content is uploaded, just waiting for hash)
+      const ipfsProcessingTimeout = 120000; // 2 MINUTES for IPFS to process and return hash
+      
+      // Total timeout = upload + processing
+      const timeoutMs = uploadTimeout + ipfsProcessingTimeout;
+      
+      logger.info(`⏱️ Upload timeout: ${Math.floor(uploadTimeout / 1000)}s for ${(totalSize/1024/1024).toFixed(1)}MB upload`);
+      logger.info(`⏱️ IPFS processing timeout: ${Math.floor(ipfsProcessingTimeout / 1000)}s for directory hashing (after upload)`);
+      logger.info(`⏱️ Total timeout: ${Math.floor(timeoutMs / 1000)}s (upload + IPFS processing)`);
     
     // 📊 Track HTTP request timing separately from our upload timing
     let httpStartTime: number;
@@ -521,6 +531,7 @@ export class IPFSService {
       // 🚨 CRITICAL: Track when upload completes vs when response arrives
       let uploadCompleteTime = 0;
       let lastProgressTime = httpStartTime;
+      let uploadPhaseComplete = false;
       
       // 🚨 BULLETPROOF: Manual timeout wrapper to catch axios timeout failures
       const uploadPromise = axios.default.post(`${threeSpeakIPFS}/api/v0/add?wrap-with-directory=true&recursive=true`, form, {
@@ -548,7 +559,9 @@ export class IPFSService {
               // Track when upload finishes
               if (percent === 100 && uploadCompleteTime === 0) {
                 uploadCompleteTime = currentTime;
-                logger.info(`📤 Upload bytes transmitted - waiting for IPFS response...`);
+                uploadPhaseComplete = true;
+                logger.info(`✅ Upload bytes transmitted in ${(timeElapsed/1000).toFixed(1)}s`);
+                logger.info(`⏳ Phase 2: Waiting for IPFS to process directory and return hash (max ${ipfsProcessingTimeout/1000}s)...`);
               }
             }
           }
@@ -558,7 +571,17 @@ export class IPFSService {
       // 🚨 MANUAL TIMEOUT: Force timeout if axios doesn't enforce it
       const manualTimeout = new Promise((_, reject) => {
         setTimeout(() => {
-          reject(new Error(`Manual timeout after ${timeoutMs}ms - axios timeout failed to trigger`));
+          const elapsed = Date.now() - httpStartTime;
+          const phase = uploadPhaseComplete ? 'IPFS processing' : 'upload';
+          const waitTime = uploadCompleteTime > 0 ? Date.now() - uploadCompleteTime : 0;
+          
+          if (uploadPhaseComplete && waitTime > ipfsProcessingTimeout) {
+            reject(new Error(`IPFS processing timeout: Upload completed in ${(uploadCompleteTime - httpStartTime)/1000}s, but IPFS took >${ipfsProcessingTimeout/1000}s to process directory`));
+          } else if (!uploadPhaseComplete) {
+            reject(new Error(`Upload timeout: Upload phase took >${uploadTimeout/1000}s (slow connection or deduplication issue)`));
+          } else {
+            reject(new Error(`Manual timeout after ${timeoutMs}ms in ${phase} phase`));
+          }
         }, timeoutMs);
       });
       
