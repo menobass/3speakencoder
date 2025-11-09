@@ -1196,11 +1196,22 @@ export class IPFSService {
     
     logger.info(`🔐 TANK MODE: Final persistence check for ${hash}`);
     
-    // Verify pin status
-    const isPinned = await this.verifyPinStatus(hash, threeSpeakIPFS, 3);
+    // 🏠 SMART CHECK: Try supernode first, then local fallback
+    let isPinned = await this.verifyPinStatus(hash, threeSpeakIPFS, 3);
     
     if (!isPinned) {
-      logger.error(`🚨 CRITICAL: Content ${hash} is NOT pinned!`);
+      logger.info(`🏠 Supernode verification failed, checking local IPFS...`);
+      isPinned = await this.verifyLocalPinStatus(hash);
+      
+      if (isPinned) {
+        logger.info(`✅ Content verified on local IPFS - lazy sync will handle supernode later`);
+        // Content is on local IPFS, this is valid for local fallback scenario
+        return true;
+      }
+    }
+    
+    if (!isPinned) {
+      logger.error(`🚨 CRITICAL: Content ${hash} is NOT pinned on either supernode or local IPFS!`);
       return false;
     }
     
