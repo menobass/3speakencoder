@@ -498,14 +498,17 @@ export class IPFSService {
     logger.info(`📦 Total directory size: ${(totalSize / 1024 / 1024).toFixed(1)}MB in ${files.length} files`);
     
     // Calculate timeout based on total size with reasonable limits
-    const baseTiimeout = 120000; // 2 minutes base
-    const perMBTimeout = 5000;   // 5 seconds per MB (reduced from 10s)
-    const maxTimeout = 900000;   // 15 minutes maximum (was 6+ hours!)
+    // 🚨 CRITICAL: Timeout must cover BOTH upload AND response processing
+    // 🚨 AGGRESSIVE: Use SHORT timeouts to prevent hanging on slow supernode responses
+    const baseTimeout = 60000;  // 1 minute base (reduced from 2 minutes)
+    const perMBTimeout = 3000;  // 3 seconds per MB (reduced from 5s)
+    const responseTimeout = 30000; // 30s for IPFS response (reduced from 60s)
+    const maxTimeout = 120000;  // 2 minutes MAXIMUM (reduced from 5 minutes!)
     
-    const calculatedTimeout = baseTiimeout + Math.floor(totalSize / (1024 * 1024)) * perMBTimeout;
+    const calculatedTimeout = baseTimeout + Math.floor(totalSize / (1024 * 1024)) * perMBTimeout + responseTimeout;
     const timeoutMs = Math.min(calculatedTimeout, maxTimeout);
     
-    logger.info(`⏱️ Directory upload timeout: ${Math.floor(timeoutMs / 1000)}s (size: ${(totalSize/1024/1024).toFixed(1)}MB, max: ${maxTimeout/1000}s)`);
+    logger.info(`⏱️ Directory upload timeout: ${Math.floor(timeoutMs / 1000)}s (size: ${(totalSize/1024/1024).toFixed(1)}MB, includes 30s response wait, max: ${maxTimeout/1000}s)`);
     
     // 📊 Track HTTP request timing separately from our upload timing
     let httpStartTime: number;
@@ -517,7 +520,12 @@ export class IPFSService {
       logger.info(`🌐 Starting HTTP POST to ${threeSpeakIPFS}/api/v0/add...`);
       httpStartTime = Date.now();
       
-      const response = await axios.default.post(`${threeSpeakIPFS}/api/v0/add?wrap-with-directory=true&recursive=true`, form, {
+      // 🚨 CRITICAL: Track when upload completes vs when response arrives
+      let uploadCompleteTime = 0;
+      let lastProgressTime = httpStartTime;
+      
+      // 🚨 BULLETPROOF: Manual timeout wrapper to catch axios timeout failures
+      const uploadPromise = axios.default.post(`${threeSpeakIPFS}/api/v0/add?wrap-with-directory=true&recursive=true`, form, {
         headers: {
           ...form.getHeaders(),
         },
@@ -529,6 +537,7 @@ export class IPFSService {
         onUploadProgress: (progressEvent) => {
           progressEvents++;
           bytesUploaded = progressEvent.loaded;
+          lastProgressTime = Date.now();
           
           if (progressEvent.total) {
             const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
@@ -537,16 +546,40 @@ export class IPFSService {
               const timeElapsed = currentTime - httpStartTime;
               const currentSpeed = (progressEvent.loaded * 8) / (1024 * 1024) / (timeElapsed / 1000); // Mbps
               logger.info(`📦 Directory upload progress: ${percent}% (${(progressEvent.loaded / 1024 / 1024).toFixed(1)}MB) - ${currentSpeed.toFixed(1)} Mbps real-time`);
+              
+              // Track when upload finishes
+              if (percent === 100 && uploadCompleteTime === 0) {
+                uploadCompleteTime = currentTime;
+                logger.info(`📤 Upload bytes transmitted - waiting for IPFS response...`);
+              }
             }
           }
         }
       });
       
+      // 🚨 MANUAL TIMEOUT: Force timeout if axios doesn't enforce it
+      const manualTimeout = new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(new Error(`Manual timeout after ${timeoutMs}ms - axios timeout failed to trigger`));
+        }, timeoutMs);
+      });
+      
+      // Race between upload and manual timeout
+      const response = await Promise.race([uploadPromise, manualTimeout]) as any;
+      
       httpEndTime = Date.now();
       const httpDuration = httpEndTime - httpStartTime;
+      const responseWaitTime = uploadCompleteTime > 0 ? httpEndTime - uploadCompleteTime : 0;
       
       // 📊 HTTP REQUEST ANALYSIS
       logger.info(`🌐 HTTP request completed in ${httpDuration}ms (${progressEvents} progress events, ${(bytesUploaded/1024/1024).toFixed(1)}MB uploaded)`);
+      if (responseWaitTime > 0) {
+        logger.info(`⏳ Response wait time: ${(responseWaitTime/1000).toFixed(1)}s (time between upload complete and response received)`);
+        if (responseWaitTime > 30000) {
+          logger.warn(`🚨 SLOW RESPONSE: IPFS took ${(responseWaitTime/1000).toFixed(1)}s to process after upload completed`);
+        }
+      }
+      logger.info(`📋 Response received - parsing IPFS output...`);
       
       if (httpDuration < 1000 && totalSize > 50 * 1024 * 1024) { // <1s for >50MB
         logger.warn(`🚨 HTTP DEDUPLICATION DETECTED: ${(totalSize/1024/1024).toFixed(1)}MB request completed in ${httpDuration}ms`);
