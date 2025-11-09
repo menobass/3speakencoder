@@ -333,12 +333,13 @@ export class IPFSService {
   }
 
   async uploadDirectory(dirPath: string, pin: boolean = false, onPinFailed?: (hash: string, error: Error) => void): Promise<string> {
-    const maxRetries = 3;
+    // 🚨 ONE SHOT ONLY: If supernode fails, move on immediately
+    const maxRetries = 1; // Changed from 3 - fuck waiting for broken supernode
     let lastError: any;
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        logger.info(`📤 Uploading directory ${dirPath} to 3Speak IPFS (attempt ${attempt}/${maxRetries})`);
+        logger.info(`📤 Uploading directory ${dirPath} to 3Speak IPFS${maxRetries > 1 ? ` (attempt ${attempt}/${maxRetries})` : ''}`);
         
         // 📊 TIMING: Measure actual upload duration
         const uploadStartTime = Date.now();
@@ -434,17 +435,15 @@ export class IPFSService {
         return result;
       } catch (error: any) {
         lastError = error;
-        logger.warn(`⚠️ Upload attempt ${attempt} failed:`, error.message);
+        logger.error(`❌ Supernode upload failed:`, error.message);
+        logger.warn(`🚨 THE SHOW MUST GO ON: Supernode failed, will use local IPFS fallback`);
         
-        if (attempt < maxRetries) {
-          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000); // Exponential backoff, max 10s
-          logger.info(`⏱️ Retrying in ${delay}ms...`);
-          await new Promise(resolve => setTimeout(resolve, delay));
-        }
+        // No retries - if supernode fails, throw immediately to trigger fallback
+        break;
       }
     }
     
-    logger.error('❌ All upload attempts failed');
+    logger.error('❌ Supernode upload failed - local fallback will handle this');
     throw lastError;
   }
   
@@ -498,17 +497,16 @@ export class IPFSService {
     logger.info(`📦 Total directory size: ${(totalSize / 1024 / 1024).toFixed(1)}MB in ${files.length} files`);
     
     // Calculate timeout based on total size with reasonable limits
-    // 🚨 CRITICAL: Timeout must cover BOTH upload AND response processing
-    // 🚨 AGGRESSIVE: Use SHORT timeouts to prevent hanging on slow supernode responses
-    const baseTimeout = 60000;  // 1 minute base (reduced from 2 minutes)
-    const perMBTimeout = 3000;  // 3 seconds per MB (reduced from 5s)
-    const responseTimeout = 30000; // 30s for IPFS response (reduced from 60s)
-    const maxTimeout = 120000;  // 2 minutes MAXIMUM (reduced from 5 minutes!)
+    // 🚨 ULTRA AGGRESSIVE: ONE SHOT, quick timeout, then move to local fallback
+    const baseTimeout = 15000;  // 15 seconds base - no patience for slow supernode
+    const perMBTimeout = 1000;  // 1 second per MB - if it's slow, fuck it
+    const responseTimeout = 15000; // 15s for IPFS response - either works or doesn't
+    const maxTimeout = 30000;  // 30 SECONDS MAXIMUM - show must go on!
     
     const calculatedTimeout = baseTimeout + Math.floor(totalSize / (1024 * 1024)) * perMBTimeout + responseTimeout;
     const timeoutMs = Math.min(calculatedTimeout, maxTimeout);
     
-    logger.info(`⏱️ Directory upload timeout: ${Math.floor(timeoutMs / 1000)}s (size: ${(totalSize/1024/1024).toFixed(1)}MB, includes 30s response wait, max: ${maxTimeout/1000}s)`);
+    logger.info(`⏱️ Directory upload timeout: ${Math.floor(timeoutMs / 1000)}s (size: ${(totalSize/1024/1024).toFixed(1)}MB, MAX: ${maxTimeout/1000}s - one shot then local fallback)`);
     
     // 📊 Track HTTP request timing separately from our upload timing
     let httpStartTime: number;
