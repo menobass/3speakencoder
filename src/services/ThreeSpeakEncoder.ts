@@ -1265,6 +1265,31 @@ export class ThreeSpeakEncoder {
         logger.info(`🔍 DEBUG: About to call gateway.finishJob for ${jobId}...`);
         finishResponse = await this.gateway.finishJob(jobId, gatewayResult);
         logger.info(`🔍 DEBUG: Gateway finishJob response received:`, finishResponse);
+        
+        // 🛡️ VERIFICATION: Did gateway actually update MongoDB?
+        // Only verify if we have MongoDB access (infrastructure nodes)
+        if (this.mongoVerifier?.isEnabled() && masterCID) {
+          logger.info(`🔍 GATEWAY_VERIFICATION: Checking if gateway updated MongoDB for job ${jobId}...`);
+          
+          const gatewayUpdated = await this.verifyGatewayCompletedJob(jobId, masterCID, 3);
+          
+          if (!gatewayUpdated) {
+            logger.error(`🚨 GATEWAY_VERIFICATION_FAILED: Gateway reported success but MongoDB was NOT updated!`);
+            logger.error(`🔍 DIAGNOSIS: Gateway API bug - returned success but failed to persist to database`);
+            logger.warn(`🏴‍☠️ EMERGENCY_TAKEOVER: Forcing MongoDB completion directly...`);
+            
+            try {
+              await this.mongoVerifier.forceCompleteJob(jobId, { cid: gatewayResult.ipfs_hash });
+              logger.info(`✅ TAKEOVER_SUCCESS: Job ${jobId} marked complete in MongoDB after gateway failure`);
+              logger.info(`🎯 Video is now live despite gateway bug - users can watch immediately`);
+            } catch (takeoverError) {
+              logger.error(`❌ TAKEOVER_FAILED: Could not force complete ${jobId} in MongoDB:`, takeoverError);
+              logger.error(`🚨 CRITICAL: Job may be stuck in 'processing' state - manual intervention required`);
+            }
+          } else {
+            logger.info(`✅ GATEWAY_VERIFICATION_SUCCESS: MongoDB confirmed job ${jobId} is complete`);
+          }
+        }
       } else {
         const reason = ownershipAlreadyConfirmed ? "manual mode" : 
                        usedMongoDBFallback ? "MongoDB fallback (gateway unreliable)" :
@@ -2368,6 +2393,76 @@ export class ThreeSpeakEncoder {
       // The PendingPinService will handle retry logic automatically
       return false;
     }
+  }
+
+  /**
+   * 🔍 VERIFY: Check if gateway actually updated MongoDB after finishJob
+   * This catches cases where gateway returns success but fails to update database
+   */
+  private async verifyGatewayCompletedJob(jobId: string, expectedCID: string, maxRetries: number = 3): Promise<boolean> {
+    // Only available for infrastructure nodes with MongoDB access
+    if (!this.mongoVerifier?.isEnabled()) {
+      logger.debug(`🔍 Gateway verification skipped - MongoDB not available`);
+      return true; // Assume success if we can't verify
+    }
+
+    logger.info(`🔍 VERIFY: Checking if gateway updated MongoDB for job ${jobId}...`);
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        // Wait before checking (give gateway time to process)
+        if (attempt > 1) {
+          const waitTime = 2000 * attempt; // 2s, 4s, 6s
+          logger.info(`🔍 VERIFY: Waiting ${waitTime/1000}s before retry ${attempt}/${maxRetries}...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+        } else {
+          // First check - wait 3 seconds for gateway to process
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+
+        // Query MongoDB directly for job status
+        const jobDoc = await this.mongoVerifier.getJobDetails(jobId);
+
+        if (!jobDoc) {
+          logger.warn(`🔍 VERIFY: Job ${jobId} not found in MongoDB (attempt ${attempt}/${maxRetries})`);
+          continue;
+        }
+
+        // Check if job is marked as complete
+        if (jobDoc.status === 'complete' || jobDoc.status === 'completed') {
+          // Verify the CID matches
+          const jobCID = jobDoc.result?.ipfs_hash;
+          
+          if (jobCID === expectedCID) {
+            logger.info(`✅ VERIFY: Gateway successfully updated MongoDB for job ${jobId}`);
+            logger.info(`✅ VERIFY: Status = ${jobDoc.status}, CID = ${jobCID}`);
+            return true;
+          } else {
+            logger.warn(`⚠️ VERIFY: Job ${jobId} marked complete but CID mismatch!`);
+            logger.warn(`⚠️ VERIFY: Expected: ${expectedCID}, Got: ${jobCID}`);
+            // Still consider this a success - gateway updated something
+            return true;
+          }
+        }
+
+        logger.warn(`🔍 VERIFY: Job ${jobId} status is "${jobDoc.status}" (not complete) - attempt ${attempt}/${maxRetries}`);
+
+        if (attempt === maxRetries) {
+          logger.error(`❌ VERIFY: Gateway failed to update MongoDB after ${maxRetries} attempts`);
+          logger.error(`❌ VERIFY: Job ${jobId} stuck in status "${jobDoc.status}"`);
+          return false;
+        }
+
+      } catch (error) {
+        logger.error(`❌ VERIFY: Error checking MongoDB for job ${jobId}:`, error);
+        
+        if (attempt === maxRetries) {
+          return false;
+        }
+      }
+    }
+
+    return false;
   }
 
   /**
