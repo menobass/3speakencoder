@@ -314,6 +314,208 @@ export class DashboardService {
     this.app.get('/', (req, res) => {
       res.sendFile(path.join(__dirname, '../dashboard/index.html'));
     });
+
+    // ===========================================
+    // IPFS STORAGE ADMINISTRATION ENDPOINTS
+    // ===========================================
+
+    // Check if storage admin is enabled and authenticate password
+    this.app.post('/api/storage-admin/auth', express.json(), (req, res) => {
+      const { password } = req.body;
+
+      try {
+        if (this.encoder) {
+          const config = (this.encoder as any).config;
+
+          // Check if MongoDB is enabled (infrastructure node requirement)
+          if (!config.mongodb?.enabled) {
+            return res.status(403).json({
+              error: 'Storage administration requires MongoDB access - only available for 3Speak infrastructure nodes'
+            });
+          }
+
+          // Check if storage admin password is configured
+          if (!config.storage_admin?.password) {
+            return res.status(403).json({
+              error: 'Storage administration not configured - contact 3Speak team'
+            });
+          }
+
+          // Authenticate password
+          if (password !== config.storage_admin.password) {
+            return res.status(401).json({
+              error: 'Invalid password'
+            });
+          }
+
+          return res.json({
+            success: true,
+            message: 'Authentication successful',
+            features: ['pins', 'migrate', 'unpin', 'gc', 'stats']
+          });
+        } else {
+          return res.status(503).json({ error: 'Encoder not available' });
+        }
+      } catch (error) {
+        logger.error('Storage admin auth error:', error);
+        return res.status(500).json({ error: 'Authentication failed' });
+      }
+    });
+
+    // List all pinned items with metadata
+    this.app.get('/api/storage-admin/pins', async (req, res) => {
+      const authPassword = req.headers['x-storage-password'] as string;
+
+      try {
+        if (this.encoder) {
+          const config = (this.encoder as any).config;
+
+          // Verify authentication
+          if (!config.storage_admin?.password || authPassword !== config.storage_admin.password) {
+            return res.status(401).json({ error: 'Authentication required' });
+          }
+
+          const pins = await this.encoder.getPinnedItems();
+          return res.json({ pins, count: pins.length });
+        } else {
+          return res.status(503).json({ error: 'Encoder not available' });
+        }
+      } catch (error) {
+        logger.error('Failed to list pinned items:', error);
+        return res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+    });
+
+    // Get details about a specific pin
+    this.app.get('/api/storage-admin/pins/:cid', async (req, res) => {
+      const { cid } = req.params;
+      const authPassword = req.headers['x-storage-password'] as string;
+
+      try {
+        if (this.encoder) {
+          const config = (this.encoder as any).config;
+
+          // Verify authentication
+          if (!config.storage_admin?.password || authPassword !== config.storage_admin.password) {
+            return res.status(401).json({ error: 'Authentication required' });
+          }
+
+          const pinDetails = await this.encoder.getPinDetails(cid);
+          return res.json(pinDetails);
+        } else {
+          return res.status(503).json({ error: 'Encoder not available' });
+        }
+      } catch (error) {
+        logger.error('Failed to get pin details:', error);
+        return res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+    });
+
+    // Migrate pins to supernode
+    this.app.post('/api/storage-admin/migrate', express.json(), async (req, res) => {
+      const { cids } = req.body;
+      const authPassword = req.headers['x-storage-password'] as string;
+
+      if (!Array.isArray(cids) || cids.length === 0) {
+        return res.status(400).json({ error: 'CID array is required' });
+      }
+
+      try {
+        if (this.encoder) {
+          const config = (this.encoder as any).config;
+
+          // Verify authentication
+          if (!config.storage_admin?.password || authPassword !== config.storage_admin.password) {
+            return res.status(401).json({ error: 'Authentication required' });
+          }
+
+          const result = await this.encoder.migratePinsToSupernode(cids);
+          return res.json(result);
+        } else {
+          return res.status(503).json({ error: 'Encoder not available' });
+        }
+      } catch (error) {
+        logger.error('Failed to migrate pins:', error);
+        return res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+    });
+
+    // Unpin items locally
+    this.app.post('/api/storage-admin/unpin', express.json(), async (req, res) => {
+      const { cids } = req.body;
+      const authPassword = req.headers['x-storage-password'] as string;
+
+      if (!Array.isArray(cids) || cids.length === 0) {
+        return res.status(400).json({ error: 'CID array is required' });
+      }
+
+      try {
+        if (this.encoder) {
+          const config = (this.encoder as any).config;
+
+          // Verify authentication
+          if (!config.storage_admin?.password || authPassword !== config.storage_admin.password) {
+            return res.status(401).json({ error: 'Authentication required' });
+          }
+
+          const result = await this.encoder.unpinItemsLocally(cids);
+          return res.json(result);
+        } else {
+          return res.status(503).json({ error: 'Encoder not available' });
+        }
+      } catch (error) {
+        logger.error('Failed to unpin items:', error);
+        return res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+    });
+
+    // Run garbage collection
+    this.app.post('/api/storage-admin/gc', async (req, res) => {
+      const authPassword = req.headers['x-storage-password'] as string;
+
+      try {
+        if (this.encoder) {
+          const config = (this.encoder as any).config;
+
+          // Verify authentication
+          if (!config.storage_admin?.password || authPassword !== config.storage_admin.password) {
+            return res.status(401).json({ error: 'Authentication required' });
+          }
+
+          const result = await this.encoder.runGarbageCollection();
+          return res.json(result);
+        } else {
+          return res.status(503).json({ error: 'Encoder not available' });
+        }
+      } catch (error) {
+        logger.error('Failed to run garbage collection:', error);
+        return res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+    });
+
+    // Get storage statistics
+    this.app.get('/api/storage-admin/stats', async (req, res) => {
+      const authPassword = req.headers['x-storage-password'] as string;
+
+      try {
+        if (this.encoder) {
+          const config = (this.encoder as any).config;
+
+          // Verify authentication
+          if (!config.storage_admin?.password || authPassword !== config.storage_admin.password) {
+            return res.status(401).json({ error: 'Authentication required' });
+          }
+
+          const stats = await this.encoder.getStorageStats();
+          return res.json(stats);
+        } else {
+          return res.status(503).json({ error: 'Encoder not available' });
+        }
+      } catch (error) {
+        logger.error('Failed to get storage stats:', error);
+        return res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+    });
   }
 
   private setupWebSocket(): void {

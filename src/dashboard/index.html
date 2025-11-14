@@ -513,10 +513,75 @@
             </div>
         </div>
 
+        <!-- IPFS Storage Management Section -->
         <div class="logs-section">
             <div class="card">
-                <h3>📝 Live Logs</h3>
-                <div class="logs-container" id="logsContainer"></div>
+                <h3>🗂️ IPFS Storage Management</h3>
+                <div id="storageAdminSection" style="display: none;">
+                    <div class="manual-job-section">
+                        <div style="margin-bottom: 15px;">
+                            <input type="password" 
+                                   class="job-id-input" 
+                                   id="storageAdminPassword" 
+                                   placeholder="Enter storage admin password">
+                            <button class="btn btn-primary" onclick="dashboard.authenticateStorageAdmin()">Authenticate</button>
+                        </div>
+                        <div id="storageAdminStatus" style="font-size: 14px; margin-bottom: 15px;"></div>
+                    </div>
+
+                    <div id="storageAdminContent" style="display: none;">
+                        <!-- Storage Stats -->
+                        <div class="stat-item">
+                            <span class="stat-label">Repository Size:</span>
+                            <span class="stat-value" id="repoSize">Loading...</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Total Pins:</span>
+                            <span class="stat-value" id="totalPins">Loading...</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Recursive Pins:</span>
+                            <span class="stat-value" id="recursivePins">Loading...</span>
+                        </div>
+
+                        <!-- Action Buttons -->
+                        <div style="display: flex; gap: 10px; margin: 20px 0;">
+                            <button class="btn btn-secondary" onclick="dashboard.loadPinnedItems()">🔍 Load Pins</button>
+                            <button class="btn btn-secondary" onclick="dashboard.loadStorageStats()">📊 Refresh Stats</button>
+                            <button class="btn btn-danger" onclick="dashboard.runGarbageCollection()">🗑️ GC</button>
+                        </div>
+
+                        <!-- Pinned Items List -->
+                        <div id="pinnedItemsContainer" style="display: none;">
+                            <h4 style="color: #00d4ff; margin-bottom: 10px;">📌 Pinned Items</h4>
+                            <div style="max-height: 300px; overflow-y: auto; border: 1px solid #374151; border-radius: 6px; padding: 10px; background: #1a202c;">
+                                <div id="pinnedItemsList">
+                                    <div style="text-align: center; color: #6b7280;">Click "Load Pins" to view pinned items</div>
+                                </div>
+                            </div>
+                            <div style="margin-top: 10px; display: flex; gap: 10px; align-items: center;">
+                                <button class="btn btn-secondary" id="selectAllPinsBtn" onclick="dashboard.toggleSelectAll()" style="flex: 0 0 auto;">☑️ Select All</button>
+                                <button class="btn btn-danger" id="batchUnpinBtn" onclick="dashboard.batchUnpin()" disabled>🗑️ Unpin Selected</button>
+                                <button class="btn btn-primary" id="batchMigrateBtn" onclick="dashboard.batchMigrate()" disabled>🚀 Migrate Selected</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Show section only for infrastructure nodes -->
+                <div id="storageAdminDisabled" style="color: #6b7280; font-style: italic;">
+                    Storage management requires MongoDB access (infrastructure nodes only)
+                </div>
+            </div>
+        </div>
+
+        <!-- Live Logs Section -->
+        <div class="logs-section">
+            <div class="card">
+                <h3>📜 Live Logs</h3>
+                <div id="logsContainer" style="max-height: 400px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; background: #1a202c; padding: 10px; border-radius: 6px;">
+                    <div style="color: #6b7280; font-style: italic;">Waiting for logs...</div>
+                </div>
             </div>
         </div>
     </div>
@@ -535,6 +600,7 @@
                 this.failedJobs = [];
                 this.dismissedJobIds = this.loadDismissedJobs(); // ✅ Load persisted dismissals
                 this.hasSeenRescue = false; // Track if we've ever seen rescue mode active
+                this.storageAdminPassword = null; // Store password after authentication
                 this.gatewayConnected = null; // null = unknown, true = connected, false = disconnected
                 this.reconnectAttempts = 0;
                 this.maxReconnectAttempts = Infinity; // ✅ Never stop trying to reconnect
@@ -1035,6 +1101,8 @@
                 const mongoStatus = document.getElementById('mongoStatus');
                 const forceProcessBtn = document.getElementById('forceProcessBtn');
                 const forceProcessInfo = document.getElementById('forceProcessInfo');
+                const storageAdminSection = document.getElementById('storageAdminSection');
+                const storageAdminDisabled = document.getElementById('storageAdminDisabled');
 
                 try {
                     const response = await fetch('/api/mongodb-status');
@@ -1047,19 +1115,35 @@
                         forceProcessBtn.style.opacity = '1';
                         forceProcessBtn.style.background = '#e74c3c';
                         forceProcessInfo.style.display = 'block';
+                        
+                        // Enable storage admin section
+                        storageAdminSection.style.display = 'block';
+                        storageAdminDisabled.style.display = 'none';
                     } else if (result.enabled && !result.connected) {
                         mongoStatus.textContent = '⚠️ MongoDB enabled but connection failed';
                         mongoStatus.style.color = '#f39c12';
                         forceProcessBtn.disabled = true;
+                        
+                        // Disable storage admin section
+                        storageAdminSection.style.display = 'none';
+                        storageAdminDisabled.style.display = 'block';
                     } else {
                         mongoStatus.textContent = '❌ MongoDB access disabled - Contact 3Speak team for access';
                         mongoStatus.style.color = '#e74c3c';
                         forceProcessBtn.disabled = true;
+                        
+                        // Disable storage admin section
+                        storageAdminSection.style.display = 'none';
+                        storageAdminDisabled.style.display = 'block';
                     }
                 } catch (error) {
                     mongoStatus.textContent = '❌ Cannot check MongoDB status';
                     mongoStatus.style.color = '#e74c3c';
                     forceProcessBtn.disabled = true;
+                    
+                    // Disable storage admin section
+                    storageAdminSection.style.display = 'none';
+                    storageAdminDisabled.style.display = 'block';
                 }
             }
 
@@ -1213,6 +1297,282 @@
                 }
             }
 
+            // ===========================================
+            // IPFS STORAGE ADMIN METHODS
+            // ===========================================
+
+            async authenticateStorageAdmin() {
+                const password = document.getElementById('storageAdminPassword').value;
+                const statusDiv = document.getElementById('storageAdminStatus');
+
+                if (!password) {
+                    this.showStorageAdminStatus('Please enter the password', 'error');
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/storage-admin/auth', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ password })
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok && result.success) {
+                        // Store password for subsequent requests
+                        this.storageAdminPassword = password;
+                        
+                        document.getElementById('storageAdminContent').style.display = 'block';
+                        document.getElementById('storageAdminPassword').value = '';
+                        this.showStorageAdminStatus('✅ Authentication successful', 'success');
+                        this.loadStorageStats(); // Load initial stats
+                    } else {
+                        this.showStorageAdminStatus(`❌ ${result.error || 'Authentication failed'}`, 'error');
+                    }
+                } catch (error) {
+                    this.showStorageAdminStatus(`❌ Error: ${error.message}`, 'error');
+                }
+            }
+
+            async loadStorageStats() {
+                try {
+                    const response = await fetch('/api/storage-admin/stats', {
+                        headers: {
+                            'x-storage-password': this.storageAdminPassword
+                        }
+                    });
+
+                    if (response.status === 401) {
+                        this.showStorageAdminStatus('❌ Session expired - please re-authenticate', 'error');
+                        document.getElementById('storageAdminContent').style.display = 'none';
+                        this.storageAdminPassword = null;
+                        return;
+                    }
+
+                    const stats = await response.json();
+
+                    if (response.ok) {
+                        const formatSize = (bytes) => {
+                            // Handle both string and number values (BigInt comes as string from JSON)
+                            const numBytes = typeof bytes === 'string' ? parseFloat(bytes) : bytes;
+                            const gb = numBytes / (1024 * 1024 * 1024);
+                            return gb.toFixed(2) + ' GB';
+                        };
+
+                        document.getElementById('repoSize').textContent = formatSize(stats.repository.size);
+                        document.getElementById('totalPins').textContent = stats.pins.total;
+                        document.getElementById('recursivePins').textContent = stats.pins.recursive;
+                    } else {
+                        this.showStorageAdminStatus(`❌ Failed to load stats: ${stats.error}`, 'error');
+                    }
+                } catch (error) {
+                    this.showStorageAdminStatus(`❌ Error loading stats: ${error.message}`, 'error');
+                }
+            }
+
+            async loadPinnedItems() {
+                const container = document.getElementById('pinnedItemsContainer');
+                const list = document.getElementById('pinnedItemsList');
+
+                container.style.display = 'block';
+                list.innerHTML = '<div style="text-align: center;">Loading...</div>';
+
+                try {
+                    const response = await fetch('/api/storage-admin/pins', {
+                        headers: {
+                            'x-storage-password': this.storageAdminPassword
+                        }
+                    });
+
+                    if (response.status === 401) {
+                        this.showStorageAdminStatus('❌ Session expired - please re-authenticate', 'error');
+                        document.getElementById('storageAdminContent').style.display = 'none';
+                        this.storageAdminPassword = null;
+                        return;
+                    }
+
+                    const data = await response.json();
+
+                    if (response.ok) {
+                        this.renderPinnedItems(data.pins);
+                    } else {
+                        list.innerHTML = `<div style="color: #ef4444;">❌ Failed to load pins: ${data.error}</div>`;
+                    }
+                } catch (error) {
+                    list.innerHTML = `<div style="color: #ef4444;">❌ Error: ${error.message}</div>`;
+                }
+            }
+
+            renderPinnedItems(pins) {
+                const list = document.getElementById('pinnedItemsList');
+
+                if (!pins || pins.length === 0) {
+                    list.innerHTML = '<div style="text-align: center; color: #6b7280;">No pinned items found</div>';
+                    return;
+                }
+
+                const formatSize = (bytes) => {
+                    if (bytes === 0) return 'Unknown';
+                    const mb = bytes / (1024 * 1024);
+                    const gb = bytes / (1024 * 1024 * 1024);
+                    return bytes > 1024 * 1024 * 1024 ? gb.toFixed(2) + ' GB' : mb.toFixed(1) + ' MB';
+                };
+
+                const itemsHtml = pins.map(pin => `
+                    <div style="border: 1px solid #374151; border-radius: 6px; padding: 10px; margin-bottom: 8px; background: #2d3748;">
+                        <div style="display: flex; align-items: center; margin-bottom: 5px;">
+                            <input type="checkbox" class="pin-checkbox" data-cid="${pin.cid}" style="margin-right: 10px;">
+                            <span style="font-family: monospace; color: #00d4ff; font-size: 14px;">${pin.cid.substring(0, 20)}...</span>
+                            <span style="margin-left: auto; color: #6b7280; font-size: 12px;">${pin.type}</span>
+                        </div>
+                        <div style="font-size: 12px; color: #a0a0a0;">
+                            Size: ${formatSize(pin.size)} | 
+                            ${pin.isDirectory ? `📁 Directory (${pin.contents ? pin.contents.length : 0} items)` : '📄 File'}
+                        </div>
+                        ${pin.error ? `<div style="color: #ef4444; font-size: 12px;">⚠️ ${pin.error}</div>` : ''}
+                    </div>
+                `).join('');
+
+                list.innerHTML = itemsHtml;
+
+                // Add event listeners to checkboxes
+                document.querySelectorAll('.pin-checkbox').forEach(checkbox => {
+                    checkbox.addEventListener('change', () => this.updateBatchButtons());
+                });
+            }
+
+            updateBatchButtons() {
+                const checkedBoxes = document.querySelectorAll('.pin-checkbox:checked');
+                const unpinBtn = document.getElementById('batchUnpinBtn');
+                const migrateBtn = document.getElementById('batchMigrateBtn');
+
+                const hasSelection = checkedBoxes.length > 0;
+                unpinBtn.disabled = !hasSelection;
+                migrateBtn.disabled = !hasSelection;
+
+                unpinBtn.textContent = hasSelection ? `🗑️ Unpin Selected (${checkedBoxes.length})` : '🗑️ Unpin Selected';
+                migrateBtn.textContent = hasSelection ? `🚀 Migrate Selected (${checkedBoxes.length})` : '🚀 Migrate Selected';
+            }
+
+            toggleSelectAll() {
+                const checkboxes = document.querySelectorAll('.pin-checkbox');
+                const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+                checkboxes.forEach(cb => cb.checked = !allChecked);
+                this.updateBatchButtons();
+            }
+
+            async batchUnpin() {
+                const checkedBoxes = document.querySelectorAll('.pin-checkbox:checked');
+                if (checkedBoxes.length === 0) return;
+
+                const cids = Array.from(checkedBoxes).map(cb => cb.getAttribute('data-cid'));
+
+                if (!confirm(`Are you sure you want to unpin ${cids.length} item(s)? This will remove them from local storage.`)) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/storage-admin/unpin', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'x-storage-password': this.storageAdminPassword
+                        },
+                        body: JSON.stringify({ cids })
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        this.showStorageAdminStatus(`✅ SUCCESS: Unpinned ${result.successful}/${result.total} items locally! Check logs for details.`, 'success');
+                        this.loadPinnedItems(); // Refresh list
+                        this.loadStorageStats(); // Refresh stats
+                    } else {
+                        this.showStorageAdminStatus(`❌ Unpin failed: ${result.error}`, 'error');
+                    }
+                } catch (error) {
+                    this.showStorageAdminStatus(`❌ Error: ${error.message}`, 'error');
+                }
+            }
+
+            async batchMigrate() {
+                const checkedBoxes = document.querySelectorAll('.pin-checkbox:checked');
+                if (checkedBoxes.length === 0) return;
+
+                const cids = Array.from(checkedBoxes).map(cb => cb.getAttribute('data-cid'));
+
+                try {
+                    const response = await fetch('/api/storage-admin/migrate', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'x-storage-password': this.storageAdminPassword
+                        },
+                        body: JSON.stringify({ cids })
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        this.showStorageAdminStatus(`✅ SUCCESS: Migrated ${result.successful}/${result.total} items to supernode! Check logs for details.`, 'success');
+                        this.loadPinnedItems(); // Refresh list
+                        this.loadStorageStats(); // Refresh stats
+                    } else {
+                        this.showStorageAdminStatus(`❌ Migration failed: ${result.error}`, 'error');
+                    }
+                } catch (error) {
+                    this.showStorageAdminStatus(`❌ Error: ${error.message}`, 'error');
+                }
+            }
+
+            async runGarbageCollection() {
+                if (!confirm('Are you sure you want to run garbage collection? This will remove unpinned content from local storage.')) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/storage-admin/gc', {
+                        method: 'POST',
+                        headers: {
+                            'x-storage-password': this.storageAdminPassword
+                        }
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        this.showStorageAdminStatus(`✅ SUCCESS: Garbage collection complete - ${result.removedItems} items removed! Check logs for details.`, 'success');
+                        this.loadStorageStats(); // Refresh stats
+                    } else {
+                        this.showStorageAdminStatus(`❌ GC failed: ${result.error}`, 'error');
+                    }
+                } catch (error) {
+                    this.showStorageAdminStatus(`❌ Error: ${error.message}`, 'error');
+                }
+            }
+
+            showStorageAdminStatus(message, type) {
+                const statusDiv = document.getElementById('storageAdminStatus');
+                const colors = {
+                    info: '#3b82f6',
+                    success: '#10b981',
+                    error: '#ef4444'
+                };
+
+                statusDiv.textContent = message;
+                statusDiv.style.color = colors[type] || '#6b7280';
+
+                // Clear after 5 seconds for success/info messages
+                if (type !== 'error') {
+                    setTimeout(() => {
+                        statusDiv.textContent = '';
+                    }, 5000);
+                }
+            }
+
             // Heartbeat monitoring and HTTP fallback methods
             startHeartbeatMonitoring() {
                 if (this.heartbeatInterval) {
@@ -1290,11 +1650,32 @@
                 }
             }, 30000); // 30 seconds
             
-            // Add Enter key support for manual job input
-            document.getElementById('manualJobId').addEventListener('keypress', (e) => {
+            // Add Enter key support for storage admin password
+            document.getElementById('storageAdminPassword').addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') {
-                    dashboard.processManualJob();
+                    dashboard.authenticateStorageAdmin();
                 }
+            });
+
+            // Storage Admin Event Listeners
+            document.getElementById('authenticateStorageBtn').addEventListener('click', () => {
+                dashboard.authenticateStorageAdmin();
+            });
+
+            document.getElementById('loadPinnedItemsBtn').addEventListener('click', () => {
+                dashboard.loadPinnedItems();
+            });
+
+            document.getElementById('runGcBtn').addEventListener('click', () => {
+                dashboard.runGarbageCollection();
+            });
+
+            document.getElementById('batchUnpinBtn').addEventListener('click', () => {
+                dashboard.batchUnpin();
+            });
+
+            document.getElementById('batchMigrateBtn').addEventListener('click', () => {
+                dashboard.batchMigrate();
             });
         });
     </script>

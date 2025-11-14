@@ -2568,4 +2568,104 @@ export class ThreeSpeakEncoder {
       throw error;
     }
   }
+
+  // ===========================================
+  // IPFS STORAGE ADMINISTRATION METHODS
+  // ===========================================
+
+  /**
+   * Get all pinned items with metadata
+   */
+  async getPinnedItems(): Promise<any[]> {
+    try {
+      logger.info(`🔍 STORAGE_ADMIN: Listing all pinned items...`);
+
+      // Use the public IPFS service method
+      return await this.ipfs.getPinnedItems();
+
+    } catch (error) {
+      logger.error(`❌ STORAGE_ADMIN: Failed to list pinned items:`, error);
+      throw new Error(`Failed to list pinned items: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get detailed information about a specific pin
+   */
+  async getPinDetails(cid: string): Promise<any> {
+    try {
+      logger.info(`🔍 STORAGE_ADMIN: Getting details for pin ${cid}...`);
+
+      // Use the public IPFS service method
+      return await this.ipfs.getPinDetails(cid);
+
+    } catch (error) {
+      logger.error(`❌ STORAGE_ADMIN: Failed to get pin details for ${cid}:`, error);
+      throw new Error(`Failed to get pin details: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Migrate pins to supernode
+   */
+  async migratePinsToSupernode(cids: string[]): Promise<any> {
+    try {
+      logger.info(`🚀 STORAGE_ADMIN: Migrating ${cids.length} pins to supernode...`);
+
+      // Use the public IPFS service method
+      return await this.ipfs.migratePinsToSupernode(cids);
+
+    } catch (error) {
+      logger.error(`❌ STORAGE_ADMIN: Migration failed:`, error);
+      throw new Error(`Migration failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Unpin items locally
+   */
+  async unpinItemsLocally(cids: string[]): Promise<any> {
+    try {
+      logger.info(`🗑️ STORAGE_ADMIN: Unpinning ${cids.length} items locally...`);
+
+      // Use the public IPFS service method
+      return await this.ipfs.unpinItemsLocally(cids);
+
+    } catch (error) {
+      logger.error(`❌ STORAGE_ADMIN: Unpinning failed:`, error);
+      throw new Error(`Unpinning failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Run garbage collection
+   */
+  async runGarbageCollection(): Promise<any> {
+    try {
+      logger.info(`🗑️ STORAGE_ADMIN: Running IPFS garbage collection...`);
+
+      // Use the public IPFS service method
+      return await this.ipfs.runGarbageCollection();
+
+    } catch (error) {
+      logger.error(`❌ STORAGE_ADMIN: Garbage collection failed:`, error);
+      throw new Error(`Garbage collection failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get storage statistics
+   */
+  async getStorageStats(): Promise<any> {
+    try {
+      logger.info(`📊 STORAGE_ADMIN: Getting storage statistics...`);
+
+      // Use the public IPFS service method
+      return await this.ipfs.getStorageStats();
+
+    } catch (error) {
+      logger.error(`❌ STORAGE_ADMIN: Failed to get storage stats:`, error);
+      throw new Error(`Failed to get storage stats: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
 }

@@ -1386,4 +1386,444 @@ export class IPFSService {
       // Don't throw - this is just for bookkeeping
     }
   }
+
+  // ===========================================
+  // PUBLIC STORAGE ADMIN METHODS
+  // ===========================================
+
+  /**
+   * Get all pinned items with metadata (for storage admin)
+   */
+  async getPinnedItems(): Promise<any[]> {
+    try {
+      const recursivePins = await this.client.pin.ls({ type: 'recursive' });
+
+      const pins: any[] = [];
+
+      for await (const pin of recursivePins) {
+        try {
+          const stat = await this.client.files.stat(`/ipfs/${pin.cid}`);
+
+          let contents = null;
+          try {
+            const lsResult = await this.client.ls(pin.cid);
+            contents = lsResult.map((item: any) => ({
+              name: item.name,
+              type: item.type,
+              size: item.size,
+              cid: item.cid.toString()
+            }));
+          } catch (lsError) {
+            contents = null;
+          }
+
+          pins.push({
+            cid: pin.cid.toString(),
+            type: 'recursive',
+            size: stat.cumulativeSize || stat.size || 0,
+            blockSize: stat.size || 0,
+            blocks: stat.blocks || 0,
+            isDirectory: contents !== null,
+            contents: contents,
+            timestamp: new Date().toISOString()
+          });
+
+        } catch (error) {
+          pins.push({
+            cid: pin.cid.toString(),
+            type: 'recursive',
+            size: 0,
+            error: 'Failed to get details',
+            timestamp: new Date().toISOString()
+          });
+        }
+      }
+
+      return pins;
+
+    } catch (error) {
+      logger.error('Failed to list pinned items:', error);
+      throw new Error(`Failed to list pinned items: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get detailed information about a specific pin
+   */
+  async getPinDetails(cid: string): Promise<any> {
+    try {
+      const pinStatus = await this.client.pin.ls({ paths: [cid] });
+      const isPinned = Array.from(pinStatus).length > 0;
+
+      if (!isPinned) {
+        return {
+          cid,
+          pinned: false,
+          message: 'CID is not pinned locally'
+        };
+      }
+
+      const stat = await this.client.files.stat(`/ipfs/${cid}`);
+
+      let contents = null;
+      let isDirectory = false;
+      try {
+        const lsResult = await this.client.ls(cid);
+        contents = lsResult.map((item: any) => ({
+          name: item.name,
+          type: item.type,
+          size: item.size,
+          cid: item.cid.toString()
+        }));
+        isDirectory = true;
+      } catch (lsError) {
+        contents = null;
+        isDirectory = false;
+      }
+
+      let supernodeStatus = 'unknown';
+      try {
+        const isAvailable = await this.verifyContentPersistence(cid);
+        supernodeStatus = isAvailable ? 'available' : 'not_found';
+      } catch (error) {
+        supernodeStatus = 'check_failed';
+      }
+
+      const details = {
+        cid,
+        pinned: true,
+        isDirectory,
+        contents,
+        size: stat.cumulativeSize || stat.size || 0,
+        blockSize: stat.size || 0,
+        blocks: stat.blocks || 0,
+        supernodeStatus,
+        timestamp: new Date().toISOString()
+      };
+
+      return details;
+
+    } catch (error) {
+      logger.error(`Failed to get pin details for ${cid}:`, error);
+      throw new Error(`Failed to get pin details: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Migrate pins to supernode
+   */
+  async migratePinsToSupernode(cids: string[]): Promise<any> {
+    try {
+      logger.info(`\x1b[36m╔═══════════════════════════════════════════════════════════╗\x1b[0m`);
+      logger.info(`\x1b[36m║  🚀 STORAGE ADMIN: Pin Migration to Supernode            ║\x1b[0m`);
+      logger.info(`\x1b[36m╚═══════════════════════════════════════════════════════════╝\x1b[0m`);
+
+      const results = {
+        total: cids.length,
+        successful: 0,
+        failed: 0,
+        details: [] as any[]
+      };
+
+      for (const cid of cids) {
+        try {
+          logger.info(`\x1b[33m📤 Migrating: ${cid.substring(0, 20)}...\x1b[0m`);
+          const uploadResult = await this.uploadDirectoryToSupernode(cid);
+
+          if (uploadResult.success) {
+            results.successful++;
+            results.details.push({
+              cid,
+              status: 'success',
+              supernodeHash: uploadResult.hash
+            });
+            logger.info(`\x1b[32m✅ SUCCESS: Pin migrated to supernode - ${cid.substring(0, 20)}...\x1b[0m`);
+          } else {
+            results.failed++;
+            results.details.push({
+              cid,
+              status: 'failed',
+              error: uploadResult.error
+            });
+            logger.error(`\x1b[31m❌ FAILED: Migration failed - ${cid.substring(0, 20)}... - ${uploadResult.error}\x1b[0m`);
+          }
+
+        } catch (error) {
+          results.failed++;
+          results.details.push({
+            cid,
+            status: 'error',
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+          logger.error(`\x1b[31m❌ ERROR: Migration error - ${cid.substring(0, 20)}... - ${error}\x1b[0m`);
+        }
+      }
+
+      logger.info(`\x1b[36m╔═══════════════════════════════════════════════════════════╗\x1b[0m`);
+      logger.info(`\x1b[36m║  📊 Migration Complete: ${results.successful}/${results.total} successful${' '.repeat(Math.max(0, 25 - results.successful.toString().length - results.total.toString().length))}║\x1b[0m`);
+      logger.info(`\x1b[36m╚═══════════════════════════════════════════════════════════╝\x1b[0m`);
+
+      return results;
+
+    } catch (error) {
+      logger.error('Migration failed:', error);
+      throw new Error(`Migration failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Upload directory to supernode (for migration)
+   * For infrastructure nodes with public IPs - supernode fetches content directly from local node
+   */
+  private async uploadDirectoryToSupernode(cid: string): Promise<{ success: boolean; hash?: string; error?: string }> {
+    const threeSpeakIPFS = this.config.ipfs?.threespeak_endpoint || 'http://65.21.201.94:5002';
+    const axios = await import('axios');
+
+    try {
+      // 1️⃣ Check if content is already on supernode
+      logger.info(`🔍 Checking if ${cid.substring(0, 20)}... is already on supernode`);
+      
+      try {
+        const checkResponse = await axios.default.post(
+          `${threeSpeakIPFS}/api/v0/pin/ls?arg=${cid}&type=all`,
+          null,
+          { timeout: 10000 }
+        );
+        
+        const pinData = typeof checkResponse.data === 'string' 
+          ? JSON.parse(checkResponse.data) 
+          : checkResponse.data;
+        
+        if (pinData && pinData.Keys && pinData.Keys[cid]) {
+          logger.info(`✅ Content already pinned on supernode: ${cid.substring(0, 20)}...`);
+          return { success: true, hash: cid };
+        }
+      } catch (checkError) {
+        // Not found, proceed with migration
+        logger.info(`📍 Content not on supernode, initiating migration...`);
+      }
+
+      // 2️⃣ Request supernode to pin the CID (it will fetch from our public node via DHT)
+      logger.info(`📌 Requesting supernode to pin ${cid.substring(0, 20)}...`);
+      logger.info(`🌐 Supernode will fetch content from local IPFS daemon via DHT`);
+      
+      const pinStartTime = Date.now();
+      
+      // Start the pin operation (non-blocking on supernode)
+      await axios.default.post(
+        `${threeSpeakIPFS}/api/v0/pin/add?arg=${cid}&recursive=true`,
+        null,
+        { 
+          timeout: 120000, // 2 minutes for pin request
+          maxContentLength: 10 * 1024 * 1024,
+          maxBodyLength: 1024 * 1024
+        }
+      );
+      
+      const pinRequestDuration = Date.now() - pinStartTime;
+      logger.info(`⏱️ Pin request completed in ${(pinRequestDuration/1000).toFixed(1)}s`);
+
+      // 3️⃣ Verify pin completed successfully with polling
+      logger.info(`🔄 Verifying pin completion on supernode...`);
+      
+      const MAX_VERIFICATION_ATTEMPTS = 60; // 60 attempts = 2 minutes max
+      const POLL_INTERVAL = 2000; // 2 seconds between checks
+      
+      for (let attempt = 1; attempt <= MAX_VERIFICATION_ATTEMPTS; attempt++) {
+        try {
+          const verifyResponse = await axios.default.post(
+            `${threeSpeakIPFS}/api/v0/pin/ls?arg=${cid}&type=all`,
+            null,
+            { timeout: 10000 }
+          );
+          
+          const pinData = typeof verifyResponse.data === 'string' 
+            ? JSON.parse(verifyResponse.data) 
+            : verifyResponse.data;
+          
+          if (pinData && pinData.Keys && pinData.Keys[cid]) {
+            const totalDuration = Date.now() - pinStartTime;
+            logger.info(`✅ Pin verified on supernode: ${cid.substring(0, 20)}... (${(totalDuration/1000).toFixed(1)}s total)`);
+            return { success: true, hash: cid };
+          }
+          
+          // Not found yet, wait before retry
+          if (attempt < MAX_VERIFICATION_ATTEMPTS) {
+            if (attempt % 10 === 0) {
+              logger.info(`⏳ Still waiting for pin completion... (attempt ${attempt}/${MAX_VERIFICATION_ATTEMPTS})`);
+            }
+            await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
+          }
+          
+        } catch (verifyError: any) {
+          logger.warn(`⚠️ Verification attempt ${attempt} failed: ${verifyError.message}`);
+          
+          if (attempt < MAX_VERIFICATION_ATTEMPTS) {
+            await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
+          }
+        }
+      }
+      
+      // 4️⃣ Verification timeout
+      logger.error(`❌ Pin verification timeout after ${MAX_VERIFICATION_ATTEMPTS * POLL_INTERVAL / 1000}s`);
+      return {
+        success: false,
+        error: `Pin verification timeout - supernode may still be processing. Check manually: ${cid}`
+      };
+
+    } catch (error: any) {
+      logger.error(`❌ Migration failed for ${cid.substring(0, 20)}...: ${error.message}`);
+      return {
+        success: false,
+        error: error.message || 'Unknown error during migration'
+      };
+    }
+  }
+
+  /**
+   * Unpin items locally
+   */
+  async unpinItemsLocally(cids: string[]): Promise<any> {
+    try {
+      logger.info(`\x1b[35m╔═══════════════════════════════════════════════════════════╗\x1b[0m`);
+      logger.info(`\x1b[35m║  🗑️  STORAGE ADMIN: Local Pin Removal                     ║\x1b[0m`);
+      logger.info(`\x1b[35m╚═══════════════════════════════════════════════════════════╝\x1b[0m`);
+
+      const results = {
+        total: cids.length,
+        successful: 0,
+        failed: 0,
+        details: [] as any[]
+      };
+
+      for (const cid of cids) {
+        try {
+          logger.info(`\x1b[33m🗑️  Unpinning: ${cid.substring(0, 20)}...\x1b[0m`);
+          await this.client.pin.rm(cid);
+
+          results.successful++;
+          results.details.push({
+            cid,
+            status: 'unpinned'
+          });
+          logger.info(`\x1b[32m✅ SUCCESS: Pin removed locally - ${cid.substring(0, 20)}...\x1b[0m`);
+
+        } catch (error) {
+          results.failed++;
+          results.details.push({
+            cid,
+            status: 'error',
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+          logger.error(`\x1b[31m❌ FAILED: Unpin failed - ${cid.substring(0, 20)}... - ${error}\x1b[0m`);
+        }
+      }
+
+      logger.info(`\x1b[35m╔═══════════════════════════════════════════════════════════╗\x1b[0m`);
+      logger.info(`\x1b[35m║  📊 Unpinning Complete: ${results.successful}/${results.total} successful${' '.repeat(Math.max(0, 23 - results.successful.toString().length - results.total.toString().length))}║\x1b[0m`);
+      logger.info(`\x1b[35m╚═══════════════════════════════════════════════════════════╝\x1b[0m`);
+
+      return results;
+
+    } catch (error) {
+      logger.error('Unpinning failed:', error);
+      throw new Error(`Unpinning failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Run garbage collection
+   */
+  async runGarbageCollection(): Promise<any> {
+    try {
+      logger.info(`\x1b[33m╔═══════════════════════════════════════════════════════════╗\x1b[0m`);
+      logger.info(`\x1b[33m║  🗑️  STORAGE ADMIN: Garbage Collection                    ║\x1b[0m`);
+      logger.info(`\x1b[33m╚═══════════════════════════════════════════════════════════╝\x1b[0m`);
+
+      const gcResult = await this.client.repo.gc();
+
+      let removedItems: string[] = [];
+
+      for await (const item of gcResult) {
+        if (item.err) {
+          logger.warn(`\x1b[31m⚠️  GC warning: ${item.cid} - ${item.err}\x1b[0m`);
+        } else {
+          removedItems.push(item.cid.toString());
+          if (removedItems.length % 10 === 0) {
+            logger.info(`\x1b[36m🧹 Cleaned ${removedItems.length} unpinned items...\x1b[0m`);
+          }
+        }
+      }
+
+      logger.info(`\x1b[33m╔═══════════════════════════════════════════════════════════╗\x1b[0m`);
+      logger.info(`\x1b[33m║  ✅ GC Complete: ${removedItems.length} items removed${' '.repeat(Math.max(0, 30 - removedItems.length.toString().length))}║\x1b[0m`);
+      logger.info(`\x1b[33m╚═══════════════════════════════════════════════════════════╝\x1b[0m`);
+
+      const result = {
+        success: true,
+        removedItems: removedItems.length,
+        items: removedItems,
+        message: `Garbage collection completed - ${removedItems.length} items removed`
+      };
+
+      return result;
+
+    } catch (error) {
+      logger.error('Garbage collection failed:', error);
+      throw new Error(`Garbage collection failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get storage statistics
+   */
+  async getStorageStats(): Promise<any> {
+    try {
+      const repoStat = await this.client.repo.stat();
+
+      const recursivePins = await this.client.pin.ls({ type: 'recursive' });
+      const directPins = await this.client.pin.ls({ type: 'direct' });
+      const indirectPins = await this.client.pin.ls({ type: 'indirect' });
+
+      let recursiveCount = 0;
+      let directCount = 0;
+      let indirectCount = 0;
+
+      for await (const pin of recursivePins) { recursiveCount++; }
+      for await (const pin of directPins) { directCount++; }
+      for await (const pin of indirectPins) { indirectCount++; }
+
+      // 🚨 BIGINT FIX: Convert all BigInt values to strings for JSON serialization
+      // IPFS returns BigInt for large numbers, which JSON.stringify() can't handle
+      const convertBigInt = (value: any): any => {
+        if (typeof value === 'bigint') {
+          return value.toString();
+        }
+        return value;
+      };
+
+      const stats = {
+        repository: {
+          size: convertBigInt(repoStat.repoSize),
+          numObjects: convertBigInt(repoStat.numObjects),
+          storageMax: convertBigInt(repoStat.storageMax),
+          version: repoStat.version,
+          path: repoStat.repoPath
+        },
+        pins: {
+          recursive: recursiveCount,
+          direct: directCount,
+          indirect: indirectCount,
+          total: recursiveCount + directCount + indirectCount
+        },
+        timestamp: new Date().toISOString()
+      };
+
+      return stats;
+
+    } catch (error) {
+      logger.error('Failed to get storage stats:', error);
+      throw new Error(`Failed to get storage stats: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
 }
