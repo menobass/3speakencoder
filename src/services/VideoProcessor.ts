@@ -476,13 +476,53 @@ export class VideoProcessor {
             });
           }
 
-          // Issue: HEVC/H.265 codec (might need special handling)
-          if (videoCodec === 'hevc' || videoCodec === 'h265') {
+          // Issue: HEVC/H.265 codec (not HTML5-safe, requires transcoding)
+          if (videoCodec === 'hevc' || videoCodec === 'h265' || videoCodec === 'hvc1') {
             issues.push({
-              severity: 'info',
+              severity: 'warning',
               type: 'hevc_input',
-              message: 'Video encoded with HEVC/H.265',
-              suggestion: 'Will use appropriate hardware decoder if available'
+              message: 'Video encoded with HEVC/H.265 - NOT HTML5-compatible',
+              suggestion: 'Will transcode to H.264 for universal browser support'
+            });
+          }
+
+          // Issue: VP9 codec (not universally supported)
+          if (videoCodec === 'vp9') {
+            issues.push({
+              severity: 'warning',
+              type: 'vp9_input',
+              message: 'Video encoded with VP9 - limited browser support',
+              suggestion: 'Will transcode to H.264 for universal compatibility'
+            });
+          }
+
+          // Issue: AV1 codec (very new, limited support)
+          if (videoCodec === 'av1') {
+            issues.push({
+              severity: 'warning',
+              type: 'av1_input',
+              message: 'Video encoded with AV1 - very limited browser support',
+              suggestion: 'Will transcode to H.264 for universal compatibility'
+            });
+          }
+
+          // Issue: HE-AAC audio (not HTML5-safe, requires AAC-LC)
+          if (audioCodec && (audioCodec.includes('aac_he') || audioCodec === 'aac_latm' || audioCodec === 'aac_fixed')) {
+            issues.push({
+              severity: 'warning',
+              type: 'he_aac_audio',
+              message: `Audio codec ${audioCodec} is not HTML5-safe (HE-AAC variants)`,
+              suggestion: 'Will transcode to AAC-LC for universal browser support'
+            });
+          }
+
+          // Issue: Opus/Vorbis audio (not widely supported in MP4)
+          if (audioCodec && (audioCodec === 'opus' || audioCodec === 'vorbis')) {
+            issues.push({
+              severity: 'warning',
+              type: 'incompatible_audio',
+              message: `Audio codec ${audioCodec} not compatible with HTML5/MP4`,
+              suggestion: 'Will transcode to AAC-LC for universal compatibility'
             });
           }
 
@@ -787,10 +827,39 @@ export class VideoProcessor {
       reasons.push('iPhone .mov file - add faststart flag');
     }
 
-    // 4. HEVC input - prefer hardware decoders
-    if (probe.videoCodec === 'hevc' || probe.videoCodec === 'h265') {
-      // Hardware decoder will be selected by existing codec detection
-      reasons.push('HEVC input - will use hardware decoder if available');
+    // 4. 🚨 INCOMPATIBLE CODECS: Force H.264 + AAC-LC transcoding
+    const isIncompatibleVideo = ['hevc', 'h265', 'hvc1', 'vp9', 'av1'].includes(probe.videoCodec);
+    const isIncompatibleAudio = probe.audioCodec && ['aac_he', 'aac_latm', 'aac_fixed', 'opus', 'vorbis'].some(codec => 
+      probe.audioCodec.includes(codec)
+    );
+    
+    if (isIncompatibleVideo || isIncompatibleAudio) {
+      const codecIssues: string[] = [];
+      
+      if (isIncompatibleVideo) {
+        // Force video transcoding to H.264
+        strategy.extraOptions.push('-c:v', 'libx264'); // Will be overridden by hardware if available
+        strategy.extraOptions.push('-profile:v', 'high');
+        strategy.extraOptions.push('-level', '4.0');
+        strategy.extraOptions.push('-pix_fmt', 'yuv420p');
+        codecIssues.push(`video: ${probe.videoCodec} → H.264`);
+      }
+      
+      if (isIncompatibleAudio) {
+        // Force audio transcoding to AAC-LC
+        strategy.extraOptions.push('-c:a', 'aac');
+        strategy.extraOptions.push('-b:a', '128k');
+        strategy.extraOptions.push('-ac', '2');
+        strategy.extraOptions.push('-ar', '48000');
+        codecIssues.push(`audio: ${probe.audioCodec} → AAC-LC`);
+      }
+      
+      reasons.push(`🚨 HTML5 COMPATIBILITY: force transcode (${codecIssues.join(', ')})`);
+      
+      logger.warn(`🚨 INCOMPATIBLE CODECS DETECTED - Forcing transcode to HTML5-safe formats`);
+      logger.warn(`   Video: ${probe.videoCodec} ${isIncompatibleVideo ? '→ H.264 (required)' : '✓'}`);
+      logger.warn(`   Audio: ${probe.audioCodec} ${isIncompatibleAudio ? '→ AAC-LC (required)' : '✓'}`);
+      logger.warn(`   ⚠️  Output will be LARGER but universally playable in browsers`);
     }
 
     // 5. High framerate normalization
