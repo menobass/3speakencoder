@@ -6,7 +6,7 @@ export class WebhookService {
   private maxRetries: number = 3;
   private retryDelay: number = 1000; // 1 second
 
-  async sendWebhook(url: string, payload: WebhookPayload): Promise<void> {
+  async sendWebhook(url: string, payload: WebhookPayload, apiKey?: string): Promise<void> {
     let lastError: Error | null = null;
 
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
@@ -17,7 +17,8 @@ export class WebhookService {
           timeout: 10000,
           headers: {
             'Content-Type': 'application/json',
-            'User-Agent': '3Speak-Encoder/1.0.0'
+            'User-Agent': '3Speak-Encoder/1.0.0',
+            ...(apiKey && { 'X-API-Key': apiKey }) // 🔑 Add API key if provided
           },
           validateStatus: (status) => status < 500 // Retry on 5xx errors only
         });

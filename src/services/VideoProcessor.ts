@@ -924,6 +924,12 @@ export class VideoProcessor {
     const workDir = join(this.tempDir, jobId);
     const outputsDir = join(workDir, 'outputs'); // Separate directory for encoded outputs only
     
+    // 📱 SHORT VIDEO MODE: 480p only, 60s max duration
+    const isShortVideo = job.short === true;
+    if (isShortVideo) {
+      logger.info(`📱 SHORT VIDEO MODE: Will process 480p only, 60-second max duration`);
+    }
+    
     try {
       // Create work and outputs directories
       await fs.mkdir(workDir, { recursive: true });
@@ -981,12 +987,15 @@ export class VideoProcessor {
         
         outputs.push(passthroughOutput);
       } else {
-        // Standard multi-quality encoding
-        const profiles = [
-          { name: '1080p', height: 1080 },
-          { name: '720p', height: 720 },
-          { name: '480p', height: 480 }
-        ];
+        // 📱 Short video mode: 480p only
+        // 🎬 Standard mode: All qualities
+        const profiles = isShortVideo 
+          ? [{ name: '480p', height: 480 }]
+          : [
+              { name: '1080p', height: 1080 },
+              { name: '720p', height: 720 },
+              { name: '480p', height: 480 }
+            ];
 
       for (let i = 0; i < profiles.length; i++) {
         const profile = profiles[i]!;
@@ -1006,7 +1015,8 @@ export class VideoProcessor {
               });
             }
           },
-          encodingStrategy // Pass the encoding strategy
+          encodingStrategy, // Pass the encoding strategy
+          isShortVideo // 📱 Pass short video flag
         );
         
         outputs.push(output);
@@ -1502,7 +1512,8 @@ ${quality}/index.m3u8
     profile: { name: string; height: number },
     workDir: string,
     progressCallback?: (progress: number) => void,
-    strategy?: EncodingStrategy | null
+    strategy?: EncodingStrategy | null,
+    isShortVideo?: boolean // 📱 Short video flag
   ): Promise<EncodedOutput> {
     const profileDir = join(workDir, profile.name);
     await fs.mkdir(profileDir, { recursive: true });
@@ -1556,7 +1567,8 @@ ${quality}/index.m3u8
           adaptiveTimeout,
           progressCallback,
           strategy, // Pass the encoding strategy
-          segmentDuration // Pass adaptive segment duration
+          segmentDuration, // Pass adaptive segment duration
+          isShortVideo // 📱 Pass short video flag
         );
         
         logger.info(`✅ ${profile.name} encoding SUCCESS with ${codec.name}`);
@@ -1598,7 +1610,8 @@ ${quality}/index.m3u8
     timeoutMs: number,
     progressCallback?: (progress: number) => void,
     strategy?: EncodingStrategy | null,
-    segmentDuration?: number
+    segmentDuration?: number,
+    isShortVideo?: boolean // 📱 Short video flag
   ): Promise<EncodedOutput> {
     return new Promise((resolve, reject) => {
       // Get profile-specific settings matching Eddie's script
@@ -1606,6 +1619,12 @@ ${quality}/index.m3u8
       
       // 🚀 Configure encoding based on codec type
       let command = ffmpeg(sourceFile);
+      
+      // 📱 SHORT VIDEO MODE: Limit to 60 seconds
+      if (isShortVideo) {
+        logger.info(`📱 Applying 60-second trim for short video`);
+        command = command.duration(60); // Trim to first 60 seconds
+      }
       
       // 🎯 Apply input options from strategy (if available)
       if (strategy?.inputOptions && strategy.inputOptions.length > 0) {

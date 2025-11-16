@@ -82,15 +82,42 @@ export class DirectApiService {
       try {
         const jobRequest: DirectJobRequest = req.body;
         
-        // Validate request
-        if (!jobRequest.input_uri) {
+        // 🔍 Validate required fields for embed collection format
+        const requiredFields = ['owner', 'permlink', 'input_cid', 'webhook_url', 'api_key'];
+        const missingFields = requiredFields.filter(field => !jobRequest[field as keyof DirectJobRequest]);
+        
+        if (missingFields.length > 0) {
           return res.status(400).json({
             job_id: '',
             status: JobStatus.FAILED,
             created_at: new Date().toISOString(),
-            error: 'input_uri is required'
+            error: `Missing required fields: ${missingFields.join(', ')}`
           } as DirectJobResponse);
         }
+        
+        // Validate short flag is boolean
+        if (typeof jobRequest.short !== 'boolean') {
+          return res.status(400).json({
+            job_id: '',
+            status: JobStatus.FAILED,
+            created_at: new Date().toISOString(),
+            error: 'short field must be true or false'
+          } as DirectJobResponse);
+        }
+        
+        // Validate webhook_url format
+        try {
+          new URL(jobRequest.webhook_url);
+        } catch {
+          return res.status(400).json({
+            job_id: '',
+            status: JobStatus.FAILED,
+            created_at: new Date().toISOString(),
+            error: 'webhook_url must be a valid URL'
+          } as DirectJobResponse);
+        }
+        
+        logger.info(`📥 Direct job received: ${jobRequest.owner}/${jobRequest.permlink} (short: ${jobRequest.short})`);
 
         // Create job via JobQueue
         const job = await this.jobQueue.addDirectJob(jobRequest);

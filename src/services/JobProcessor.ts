@@ -1,5 +1,5 @@
-import { VideoJob } from '../types/index.js';
-import { DirectJob } from '../types/DirectApi.js';
+import { VideoJob, VideoProfile } from '../types/index.js';
+import { DirectJob, DirectJobRequest } from '../types/DirectApi.js';
 import { VideoProcessor } from './VideoProcessor.js';
 import { GatewayClient } from './GatewayClient.js';
 import { WebhookService } from './WebhookService.js';
@@ -102,7 +102,7 @@ export class JobProcessor {
     const request = job.request;
     
     try {
-      logger.info(`🚀 Processing direct job: ${jobId} (video: ${request.video_id})`);
+      logger.info(`🚀 Processing direct job: ${jobId} (${request.owner}/${request.permlink}, short: ${request.short})`);
 
       // Convert DirectJob to VideoJob format for processing
       const videoJob: VideoJob = {
@@ -111,48 +111,74 @@ export class JobProcessor {
         status: JobStatus.RUNNING,
         created_at: job.created_at,
         input: {
-          uri: request.input_uri,
+          uri: `ipfs://${request.input_cid}`, // Use input_cid with ipfs:// prefix
           size: 0 // Unknown for direct jobs
         },
         metadata: {
-          video_owner: 'direct-api',
-          video_permlink: request.video_id
+          video_owner: request.owner,
+          video_permlink: request.permlink
         },
         storageMetadata: {
-          app: 'direct-api',
-          key: request.video_id,
+          app: request.frontend_app || 'direct-api',
+          key: `${request.owner}/${request.permlink}`,
           type: 'direct'
         },
         profiles: this.generateProfilesFromRequest(request),
         output: [],
-        progress: 0
+        progress: 0,
+        // 🎬 Pass short flag through to VideoProcessor
+        short: request.short,
+        // 📋 Store webhook info for completion callback
+        webhook_url: request.webhook_url,
+        api_key: request.api_key,
+        ...(request.originalFilename && { originalFilename: request.originalFilename })
       };
 
       // Process the video with progress callback
+      const startTime = Date.now();
       const result = await this.videoProcessor.processVideo(videoJob, (progress) => {
         this.jobQueue.updateProgress(jobId, progress.percent);
       });
+      const processingTimeSeconds = (Date.now() - startTime) / 1000;
 
       // Complete the job
       this.jobQueue.completeJob(jobId, result);
       
-      // Send webhook if URL provided
+      // 🔔 Send webhook notification if URL provided
       if (request.webhook_url) {
         try {
-          await this.webhookService.sendWebhook(request.webhook_url, {
-            video_id: request.video_id,
+          // Extract manifest CID from result
+          const manifestCid = result[0]?.ipfsHash || '';
+          const qualitiesEncoded = result.map(r => r.profile).filter(p => p !== 'master');
+          
+          const webhookPayload: any = {
+            owner: request.owner,
+            permlink: request.permlink,
+            input_cid: request.input_cid,
+            status: 'complete',
+            manifest_cid: manifestCid,
+            video_url: `ipfs://${manifestCid}/manifest.m3u8`,
             job_id: jobId,
-            status: JobStatus.COMPLETE,
-            result: result,
+            processing_time_seconds: processingTimeSeconds,
+            qualities_encoded: qualitiesEncoded,
+            encoder_id: process.env.ENCODER_NAME || 'unknown',
             timestamp: new Date().toISOString()
-          });
+          };
+          
+          // Add optional fields only if defined
+          if (request.frontend_app) webhookPayload.frontend_app = request.frontend_app;
+          if (request.originalFilename) webhookPayload.originalFilename = request.originalFilename;
+          
+          await this.webhookService.sendWebhook(request.webhook_url, webhookPayload, request.api_key);
+          
+          logger.info(`✅ Webhook delivered for ${request.owner}/${request.permlink}`);
         } catch (webhookError) {
           logger.warn(`⚠️ Webhook delivery failed for job ${jobId}:`, webhookError);
           // Don't fail the job for webhook failures
         }
       }
       
-      logger.info(`✅ Direct job completed: ${jobId} (video: ${request.video_id})`);
+      logger.info(`✅ Direct job completed: ${jobId} (${request.owner}/${request.permlink})`);
       logger.info(`🛡️ TANK MODE: Content uploaded, pinned, and announced to DHT`);
 
     } catch (error) {
@@ -161,16 +187,21 @@ export class JobProcessor {
       
       this.jobQueue.failJob(jobId, errorMessage);
       
-      // Send failure webhook if URL provided
+      // 🔔 Send failure webhook if URL provided
       if (request.webhook_url) {
         try {
           await this.webhookService.sendWebhook(request.webhook_url, {
-            video_id: request.video_id,
+            owner: request.owner,
+            permlink: request.permlink,
+            input_cid: request.input_cid,
+            status: 'failed',
             job_id: jobId,
-            status: JobStatus.FAILED,
+            processing_time_seconds: 0,
+            qualities_encoded: [],
+            encoder_id: process.env.ENCODER_NAME || 'unknown',
             error: errorMessage,
             timestamp: new Date().toISOString()
-          });
+          }, request.api_key);
         } catch (webhookError) {
           logger.warn(`⚠️ Failure webhook delivery failed for job ${jobId}:`, webhookError);
         }
@@ -178,19 +209,19 @@ export class JobProcessor {
     }
   }
 
-  private generateProfilesFromRequest(request: DirectJob['request']) {
-    const defaultProfiles = [
+  private generateProfilesFromRequest(request: DirectJobRequest): VideoProfile[] {
+    // 📱 Short video mode: 480p only
+    if (request.short) {
+      return [
+        { name: '480p', size: '?x480', width: 854, height: 480 }
+      ];
+    }
+    
+    // 🎬 Regular mode: All qualities
+    return [
       { name: '1080p', size: '?x1080', width: 1920, height: 1080 },
       { name: '720p', size: '?x720', width: 1280, height: 720 },
       { name: '480p', size: '?x480', width: 854, height: 480 }
     ];
-
-    if (request.profiles && request.profiles.length > 0) {
-      return defaultProfiles.filter(profile => 
-        request.profiles!.includes(profile.name)
-      );
-    }
-
-    return defaultProfiles;
   }
 }

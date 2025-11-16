@@ -701,21 +701,27 @@ export class ThreeSpeakEncoder {
 
   private async processDirectJob(job: any): Promise<void> {
     this.activeJobs.set(job.id, job);
+    const request = job.request;
+    
+    // 📱 Short video mode detection
+    const isShortVideo = request.short === true;
     
     // Start job tracking in dashboard
     if (this.dashboard) {
       this.dashboard.startJob(job.id, {
         type: 'direct-api',
-        video_id: job.request.video_id,
-        input_uri: job.request.input_uri,
-        profiles: job.request.profiles || ['1080p', '720p', '480p'],
-        webhook_url: job.request.webhook_url
+        video_id: `${request.owner}/${request.permlink}`,
+        input_uri: `ipfs://${request.input_cid}`,
+        profiles: isShortVideo ? ['480p'] : ['1080p', '720p', '480p'],
+        webhook_url: request.webhook_url
       });
     }
     
     await this.updateDashboard();
 
     try {
+      const startTime = Date.now();
+      
       // Convert DirectJob to VideoJob format for processing
       const videoJob: VideoJob = {
         id: job.id,
@@ -723,24 +729,31 @@ export class ThreeSpeakEncoder {
         status: JobStatus.QUEUED,
         created_at: new Date().toISOString(),
         input: {
-          uri: job.request.input_uri,
+          uri: `ipfs://${request.input_cid}`, // NEW: Use input_cid with ipfs:// prefix
           size: 0 // Will be determined during download
         },
         metadata: {
-          video_owner: 'direct-api',
-          video_permlink: job.request.video_id
+          video_owner: request.owner, // NEW: Use owner
+          video_permlink: request.permlink // NEW: Use permlink
         },
         storageMetadata: {
-          app: 'direct-api',
-          key: job.request.video_id,
+          app: request.frontend_app || 'direct-api',
+          key: `${request.owner}/${request.permlink}`,
           type: 'direct'
         },
-        profiles: this.getProfilesForJob(job.request.profiles || ['1080p', '720p', '480p']),
-        output: []
+        profiles: this.getProfilesForJob(isShortVideo ? ['480p'] : ['1080p', '720p', '480p']),
+        output: [],
+        // 🎬 Pass short flag and webhook info to VideoProcessor
+        short: request.short,
+        webhook_url: request.webhook_url,
+        api_key: request.api_key,
+        ...(request.originalFilename && { originalFilename: request.originalFilename })
       };
 
       // Process video using existing VideoProcessor
       const result = await this.processor.processVideo(videoJob);
+      
+      const processingTimeSeconds = (Date.now() - startTime) / 1000;
       
       // Complete the job
       this.jobQueue.completeJob(job.id, result);
@@ -750,14 +763,74 @@ export class ThreeSpeakEncoder {
         this.dashboard.completeJob(job.id, result);
       }
       
-      logger.info(`✅ Direct job completed: ${job.id}`);
+      logger.info(`✅ Direct job completed: ${job.id} (${request.owner}/${request.permlink})`);
       
-      // TODO: Send webhook notification if webhook_url provided
-      if (job.request.webhook_url) {
-        // WebhookService integration would go here
-        logger.info(`🔔 Webhook notification needed for ${job.request.webhook_url}`);
+      // 🔔 Send webhook notification if webhook_url provided
+      if (request.webhook_url) {
+        try {
+          const manifestCid = result[0]?.ipfsHash || '';
+          const qualitiesEncoded = result.map(r => r.profile).filter(p => p !== 'master');
+          
+          const webhookPayload: any = {
+            owner: request.owner,
+            permlink: request.permlink,
+            input_cid: request.input_cid,
+            status: 'complete',
+            manifest_cid: manifestCid,
+            video_url: `ipfs://${manifestCid}/manifest.m3u8`,
+            job_id: job.id,
+            processing_time_seconds: processingTimeSeconds,
+            qualities_encoded: qualitiesEncoded,
+            encoder_id: this.config.node?.name || 'unknown',
+            timestamp: new Date().toISOString()
+          };
+          
+          // Add optional fields only if defined
+          if (request.frontend_app) webhookPayload.frontend_app = request.frontend_app;
+          if (request.originalFilename) webhookPayload.originalFilename = request.originalFilename;
+          
+          // Import WebhookService at top of file if not already
+          const { WebhookService } = await import('./WebhookService.js');
+          const webhookService = new WebhookService();
+          
+          await webhookService.sendWebhook(request.webhook_url, webhookPayload, request.api_key);
+          logger.info(`✅ Webhook delivered for ${request.owner}/${request.permlink}`);
+        } catch (webhookError) {
+          logger.warn(`⚠️ Webhook delivery failed for job ${job.id}:`, webhookError);
+          // Don't fail the job for webhook failures
+        }
       }
       
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error(`❌ Direct job ${job.id} failed:`, cleanErrorForLogging(error));
+      
+      this.jobQueue.failJob(job.id, errorMessage);
+      
+      // 🔔 Send failure webhook if URL provided
+      if (request.webhook_url) {
+        try {
+          const { WebhookService } = await import('./WebhookService.js');
+          const webhookService = new WebhookService();
+          
+          await webhookService.sendWebhook(request.webhook_url, {
+            owner: request.owner,
+            permlink: request.permlink,
+            input_cid: request.input_cid,
+            status: 'failed',
+            job_id: job.id,
+            processing_time_seconds: 0,
+            qualities_encoded: [],
+            encoder_id: this.config.node?.name || 'unknown',
+            error: errorMessage,
+            timestamp: new Date().toISOString()
+          }, request.api_key);
+        } catch (webhookError) {
+          logger.warn(`⚠️ Failure webhook delivery failed for job ${job.id}:`, webhookError);
+        }
+      }
+      
+      throw error;
     } finally {
       this.activeJobs.delete(job.id);
       await this.updateDashboard();

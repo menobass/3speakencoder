@@ -25,6 +25,14 @@ export interface VideoJob {
   download_pct?: number;
   result?: EncodedOutput[]; // For consistency with DirectJob
   error?: string; // For error tracking
+  
+  // 🎬 Direct API short video support
+  short?: boolean;              // Enable short video mode (480p only, 60s max)
+  
+  // 🔔 Webhook callback support (Direct API only)
+  webhook_url?: string;         // URL to POST completion notification
+  api_key?: string;             // API key for webhook authentication
+  originalFilename?: string;    // Original filename for tracking
 }
 
 export interface VideoProfile {
