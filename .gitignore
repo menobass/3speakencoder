@@ -136,6 +136,7 @@ super-encoder-*.md
 docs/gateway-monitoring-service.md
 docs/gateway-aid-service.md
 docs/GATEWAY_AID_FALLBACK.md
+DIRECT_API_USAGE.md
 
 # Administrative scripts and infrastructure tools
 admin-scripts/

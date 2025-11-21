@@ -1620,16 +1620,16 @@ ${quality}/index.m3u8
       // 🚀 Configure encoding based on codec type
       let command = ffmpeg(sourceFile);
       
-      // 📱 SHORT VIDEO MODE: Limit to 60 seconds
-      if (isShortVideo) {
-        logger.info(`📱 Applying 60-second trim for short video`);
-        command = command.duration(60); // Trim to first 60 seconds
-      }
-      
       // 🎯 Apply input options from strategy (if available)
       if (strategy?.inputOptions && strategy.inputOptions.length > 0) {
         logger.debug(`🛠️ Applying strategy input options: ${strategy.inputOptions.join(' ')}`);
         strategy.inputOptions.forEach(opt => command = command.inputOptions(opt));
+      }
+      
+      // 📱 SHORT VIDEO MODE: Limit to 60 seconds (must be output option, not input)
+      if (isShortVideo) {
+        logger.info(`📱 Applying 60-second trim for short video`);
+        command = command.outputOptions('-t', '60'); // Trim to first 60 seconds
       }
       
       if (codec.name === 'h264_vaapi') {
