@@ -925,9 +925,13 @@ export class VideoProcessor {
     const outputsDir = join(workDir, 'outputs'); // Separate directory for encoded outputs only
     
     // 📱 SHORT VIDEO MODE: 480p only, 60s max duration
+    logger.info(`🔍 DEBUG: job.short = ${job.short}, type = ${typeof job.short}`);
     const isShortVideo = job.short === true;
+    logger.info(`🔍 DEBUG: isShortVideo = ${isShortVideo}`);
     if (isShortVideo) {
       logger.info(`📱 SHORT VIDEO MODE: Will process 480p only, 60-second max duration`);
+    } else {
+      logger.info(`🎬 STANDARD MODE: Will process all qualities, full video length`);
     }
     
     try {
@@ -968,6 +972,9 @@ export class VideoProcessor {
       if (isPassthrough) {
         // Passthrough mode: Single HLS output with copy codecs
         logger.info(`🔄 Processing with passthrough mode (no re-encoding)`);
+        if (isShortVideo) {
+          logger.info(`📱 Passthrough mode + SHORT VIDEO: Will trim to 60 seconds`);
+        }
         
         const passthroughOutput = await this.createPassthroughHLS(
           sourceFile,
@@ -982,7 +989,8 @@ export class VideoProcessor {
                 bitrate: `${progress.bitrate || 0}kbps`
               });
             }
-          }
+          },
+          isShortVideo // 📱 Pass short flag to passthrough mode
         );
         
         outputs.push(passthroughOutput);
@@ -1342,7 +1350,8 @@ export class VideoProcessor {
   private async createPassthroughHLS(
     sourceFile: string,
     outputsDir: string,
-    progressCallback: (progress: { percent?: number; fps?: number; speed?: number; bitrate?: number }) => void
+    progressCallback: (progress: { percent?: number; fps?: number; speed?: number; bitrate?: number }) => void,
+    isShortVideo?: boolean // 📱 Short video flag
   ): Promise<EncodedOutput> {
     const fs = await import('fs/promises');
     
@@ -1357,11 +1366,19 @@ export class VideoProcessor {
     const segmentDuration = await this.calculateAdaptiveSegmentDuration(sourceFile);
     
     return new Promise((resolve, reject) => {
-      const command = ffmpeg(sourceFile)
+      let command = ffmpeg(sourceFile)
         .addOption('-c:v', 'copy')     // Copy video without re-encoding
         .addOption('-c:a', 'copy')     // Copy audio without re-encoding
         .addOption('-avoid_negative_ts', 'make_zero')
-        .addOption('-copyts')
+        .addOption('-copyts');
+      
+      // 📱 SHORT VIDEO MODE: Trim to 60 seconds in passthrough mode
+      if (isShortVideo) {
+        logger.info(`📱 Applying 60-second trim in passthrough mode`);
+        command = command.addOption('-t', '60'); // Trim to first 60 seconds
+      }
+      
+      command = command
         .addOption('-f', 'hls')        // HLS output format
         .addOption('-hls_time', segmentDuration.toString()) // Adaptive segment duration
         .addOption('-hls_list_size', '0')  // Keep all segments in playlist
